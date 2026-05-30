@@ -15,7 +15,7 @@
           </div>
           <div>
             <h2 class="text-base">감정 자료를 모아 결과를 만듭니다</h2>
-            <p class="text-sm text-gray-600 mt-1">자켓, 표면 이미지, 동영상, 카탈로그 번호를 바탕으로 판매 설명에 쓸 상태 근거를 만듭니다.</p>
+            <p class="text-sm text-gray-600 mt-1">표면 이미지, 동영상, 카탈로그 번호를 바탕으로 판매 설명에 쓸 상태 근거를 만듭니다.</p>
           </div>
         </div>
       </section>
@@ -27,7 +27,7 @@
       </section>
 
       <section class="space-y-3">
-        <h2 class="text-base">자켓 사진</h2>
+        <h2 class="text-base">대표 사진</h2>
         <div v-if="imagePreview" class="relative aspect-square overflow-hidden rounded-lg bg-gray-100">
           <img :src="imagePreview" alt="업로드한 앨범 커버" class="w-full h-full object-cover" />
           <button class="absolute top-2 right-2 px-3 py-1 rounded-lg bg-black/60 text-white text-sm" @click="clearImage">변경</button>
@@ -116,7 +116,10 @@
         <div class="grid grid-cols-2 gap-2 text-xs">
           <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">스크래치 후보</p><p>{{ recognition.scratchCount }}개</p></div>
           <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">표시 위치</p><p>{{ scratchRegions.length }}곳</p></div>
+          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">강한 후보</p><p>{{ scratchDetails.highSeverity || 0 }}곳</p></div>
+          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">반사 위험</p><p>{{ riskLabel(recognition.reflectionRisk) }}</p></div>
         </div>
+        <p class="rounded-lg bg-yellow-50 p-3 text-xs text-yellow-900">{{ recognition.dustOrReflectionNote }}</p>
         <ul class="space-y-1 text-sm text-gray-700">
           <li v-for="signal in recognition.signals" :key="signal" class="flex gap-2">
             <Check :size="15" class="text-green-600 mt-0.5 shrink-0" />
@@ -149,21 +152,6 @@
         </button>
       </section>
 
-      <section v-if="selectedCandidate" class="rounded-lg border p-4 space-y-4">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base">자켓 상태 측정</h2>
-          <span class="text-2xl font-medium">{{ cover.grade }}</span>
-        </div>
-        <div>
-          <div class="flex justify-between text-sm mb-2">
-            <span>상태 점수</span>
-            <span class="text-blue-600">{{ cover.score }}점</span>
-          </div>
-          <div class="h-2 rounded-full bg-gray-200 overflow-hidden">
-            <div class="h-full bg-blue-600" :style="{ width: `${cover.score}%` }"></div>
-          </div>
-        </div>
-      </section>
     </main>
 
     <footer class="p-4 border-t">
@@ -180,16 +168,13 @@ import { useRouter } from 'vue-router';
 import { ArrowLeft, Camera, Check, ImagePlus, ScanLine, Video } from 'lucide-vue-next';
 import {
   createPressingInfo,
-  estimateCoverCondition,
   fetchDiscogsCandidates,
   findAlbumCandidates,
   analyzeLpMedia,
-  analyzeJacketCondition,
   recognizeLpImage,
   saveCoverAnalysisReport,
   type AlbumCandidate,
   type AudioAnalysisResult,
-  type CoverCondition,
   type LpRecognition,
 } from '../data/vinylAnalysis';
 import { useAppStore } from '../stores/appStore';
@@ -205,7 +190,6 @@ const imagePreview = ref(draftImages[0] || '');
 const recordPreview = ref(draftImages[1] || '');
 const recordVideoPreview = ref(String(draft?.recordVideoDataUrl || ''));
 const recognition = ref<LpRecognition>(recognizeLpImage(recordPreview.value || recordVideoPreview.value));
-const cover = ref<CoverCondition>(estimateCoverCondition(catalogNumber.value, imagePreview.value));
 const candidates = ref<AlbumCandidate[]>([]);
 const selectedCandidateId = ref('');
 const isAnalyzing = ref(false);
@@ -216,13 +200,14 @@ const fallbackCandidate = computed(() => selectedCandidate.value || findAlbumCan
 const pressing = computed(() => createPressingInfo(fallbackCandidate.value, matrixNumber.value));
 const recordMediaPreview = computed(() => recordPreview.value || recordVideoPreview.value);
 const scratchRegions = computed(() => recognition.value.scratchRegions || []);
-const canAnalyze = computed(() => Boolean(imagePreview.value && recordMediaPreview.value && catalogNumber.value.trim() && selectedCandidate.value));
+const scratchDetails = computed(() => recognition.value.scratchDetails || {});
+const canAnalyze = computed(() => Boolean(recordMediaPreview.value && catalogNumber.value.trim() && selectedCandidate.value));
 const scratchColor = (severity?: string) => severity === 'high' ? '#ef4444' : severity === 'medium' ? '#f97316' : '#facc15';
+const riskLabel = (risk?: 'low' | 'medium' | 'high' | string) => risk === 'high' ? '높음' : risk === 'medium' ? '주의' : '낮음';
 const recordVideoGuides = [
   '밝은 곳에서 LP 표면 전체가 보이도록 8~12초 정도 천천히 촬영하세요.',
   '휴대폰을 비스듬히 살짝 움직여 반사 위치가 이동하게 찍으면 스크래치와 먼지 구분이 쉬워집니다.',
   '중앙 라벨보다 홈이 있는 검은 표면을 크게 담고, 손 그림자와 강한 플래시는 피해주세요.',
-  '자켓 상태는 별도 사진으로 정면, 모서리, 링웨어가 보이게 추가하면 감정서 신뢰도가 올라갑니다.',
 ];
 
 const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
@@ -241,7 +226,7 @@ const refreshCandidates = async () => {
   const catalog = catalogNumber.value.trim();
   isSearching.value = true;
   const result = catalog
-    ? await fetchDiscogsCandidates(catalog, form.albumTitle, form.artist)
+    ? await fetchDiscogsCandidates(catalog, '', '')
     : { candidates: findAlbumCandidates(''), source: 'mock' as const };
   applyCandidates(result.candidates);
   isSearching.value = false;
@@ -252,7 +237,6 @@ const handleImage = async (event: Event) => {
   if (!file) return;
   imagePreview.value = await readFileAsDataUrl(file);
   if (!catalogNumber.value.trim()) catalogNumber.value = 'CL 1355';
-  cover.value = await analyzeJacketCondition(imagePreview.value, catalogNumber.value);
   await refreshCandidates();
 };
 
@@ -286,7 +270,6 @@ const clearRecordVideo = () => {
 
 watch(catalogNumber, () => {
   const catalog = catalogNumber.value.trim();
-  cover.value = estimateCoverCondition(catalog, imagePreview.value);
   if (catalog.length >= 3) applyCandidates(findAlbumCandidates(catalog));
 });
 
@@ -294,7 +277,7 @@ const startAnalysis = () => {
   if (!canAnalyze.value || !selectedCandidate.value) return;
   isAnalyzing.value = true;
   saveCoverAnalysisReport({
-    imageDataUrl: imagePreview.value,
+    imageDataUrl: imagePreview.value || recordPreview.value,
     recordImageDataUrl: recordPreview.value,
     recordVideoDataUrl: recordVideoPreview.value,
     catalogNumber: catalogNumber.value,
@@ -302,17 +285,13 @@ const startAnalysis = () => {
     recognition: recognition.value,
     selectedCandidate: selectedCandidate.value,
     pressing: pressing.value,
-    cover: cover.value,
     audio: draft?.audioAnalysis as AudioAnalysisResult | undefined,
   });
   router.push('/sell/analysis/result');
 };
 
 onMounted(async () => {
-  if (imagePreview.value) {
-    if (!catalogNumber.value.trim()) catalogNumber.value = 'CL 1355';
-    cover.value = await analyzeJacketCondition(imagePreview.value, catalogNumber.value);
-  }
+  if (imagePreview.value && !catalogNumber.value.trim()) catalogNumber.value = 'CL 1355';
   if (recordPreview.value) {
     recognition.value = await analyzeLpMedia(recordPreview.value, 'image');
   } else if (recordVideoPreview.value) {

@@ -1,45 +1,222 @@
-import os
-import json
 import base64
+import hashlib
+import hmac
+import json
 import logging
+import os
+import smtplib
 import tempfile
-from datetime import datetime
-from typing import Annotated
+from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
+from typing import Annotated, Any
+from urllib.parse import quote
+from uuid import uuid4
 
-import asyncpg
-import httpx
 import cv2
+import httpx
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Form
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
-load_dotenv()
+logger = logging.getLogger("vinyl_check")
 
 app = FastAPI(title="Vinyl-Check API")
-db_pool: asyncpg.Pool | None = None
-logger = logging.getLogger("vinyl_check")
-SERVER_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
-SERVER_LISTINGS_PATH = os.path.join(SERVER_DATA_DIR, "listings.json")
-SERVER_CHATS_PATH = os.path.join(SERVER_DATA_DIR, "chats.json")
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+USERS_PATH = os.path.join(DATA_DIR, "users.json")
+LISTINGS_PATH = os.path.join(DATA_DIR, "listings.json")
+CHATS_PATH = os.path.join(DATA_DIR, "chats.json")
+REVIEWS_PATH = os.path.join(DATA_DIR, "reviews.json")
+COMMENTS_PATH = os.path.join(DATA_DIR, "comments.json")
+OFFERS_PATH = os.path.join(DATA_DIR, "offers.json")
+RESET_TOKENS_PATH = os.path.join(DATA_DIR, "password_reset_tokens.json")
+EMAIL_VERIFICATION_PATH = os.path.join(DATA_DIR, "email_verification_tokens.json")
+
+
+def load_local_env() -> None:
+    env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as file:
+            for raw_line in file:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'").strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        return
+
+
+load_local_env()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost",
-        "capacitor://localhost",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-    ],
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+|192\.168\.\d+\.\d+):517[3-9]",
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def read_json(path: str, fallback: Any) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+
+def write_json(path: str, payload: Any) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def stable_id(prefix: str, value: str) -> str:
+    digest = hashlib.sha1(value.encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}-{digest}"
+
+
+def normalize_username(username: str) -> str:
+    return username.strip().lower()
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def decode_jwt_payload(token: str) -> dict[str, Any]:
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return {}
+
+
+def hash_password(password: str, salt: str | None = None) -> str:
+    password_salt = salt or base64.urlsafe_b64encode(os.urandom(16)).decode("utf-8")
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), password_salt.encode("utf-8"), 100_000)
+    return f"pbkdf2_sha256${password_salt}${base64.urlsafe_b64encode(digest).decode('utf-8')}"
+
+
+def verify_password(password: str, password_hash: str | None) -> bool:
+    if not password_hash:
+        return False
+    try:
+        algorithm, salt, expected = password_hash.split("$", 2)
+    except ValueError:
+        return False
+    if algorithm != "pbkdf2_sha256":
+        return False
+    return hmac.compare_digest(hash_password(password, salt), f"{algorithm}${salt}${expected}")
+
+
+def public_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in user.items() if key not in {"passwordHash"}}
+
+
+def find_user_by_email(users: dict[str, Any], email: str) -> dict[str, Any] | None:
+    target = normalize_email(email)
+    return next((user for user in users.values() if normalize_email(str(user.get("email", ""))) == target), None)
+
+
+def find_user_by_username(users: dict[str, Any], username: str) -> dict[str, Any] | None:
+    target = normalize_username(username)
+    return next((user for user in users.values() if normalize_username(str(user.get("username", ""))) == target), None)
+
+
+def find_user_for_login(users: dict[str, Any], login_id: str) -> dict[str, Any] | None:
+    if "@" in login_id:
+        return find_user_by_email(users, login_id)
+    return find_user_by_username(users, login_id)
+
+
+def risk_label(value: float, medium: float, high: float) -> str:
+    if value >= high:
+        return "high"
+    if value >= medium:
+        return "medium"
+    return "low"
+
+
+def grade_from_score(score: int) -> str:
+    if score >= 90:
+        return "NM"
+    if score >= 82:
+        return "VG+"
+    if score >= 72:
+        return "VG"
+    if score >= 62:
+        return "G+"
+    return "G"
+
+
+def playback_impact(scratch_risk: str, reflection_risk: str) -> str:
+    if scratch_risk == "high":
+        return "높음"
+    if scratch_risk == "medium" or reflection_risk == "high":
+        return "주의"
+    return "낮음"
+
+
+class AuthLogin(BaseModel):
+    username: str
+    password: str
+    rememberMe: bool = True
+
+
+class AuthSignup(BaseModel):
+    username: str
+    email: str
+    password: str
+    genres: list[str] = []
+    emailVerificationToken: str | None = None
+
+
+class AuthCheck(BaseModel):
+    username: str | None = None
+    email: str | None = None
+
+
+class GoogleLogin(BaseModel):
+    credential: str | None = None
+    email: str | None = None
+    name: str | None = None
+
+
+class FindIdRequest(BaseModel):
+    email: str
+
+
+class EmailVerificationRequest(BaseModel):
+    email: str
+
+
+class EmailVerificationConfirm(BaseModel):
+    email: str
+    code: str
+
+
+class PasswordResetRequest(BaseModel):
+    loginId: str
+
+
+class PasswordResetConfirm(BaseModel):
+    resetCode: str
+    password: str
 
 
 class ListingCreate(BaseModel):
@@ -51,26 +228,20 @@ class ListingCreate(BaseModel):
     tags: list[str] = []
     user_id: str | None = None
     images: list[str] = []
+    cover_image_data_url: str | None = None
+    record_image_data_url: str | None = None
+    record_video_data_url: str | None = None
     genre: str | None = None
     year: int | None = None
     location: str | None = None
     audio_grade: str | None = None
     audio_score: int | None = None
+    audio_samples: dict[str, Any] = {}
     jacket_grade: str | None = None
     jacket_score: int | None = None
     is_rare: bool = False
     is_first_press: bool = False
-    analysis_report: dict = {}
-
-
-class OfferCreate(BaseModel):
-    listing_id: str
-    offer_price: int
-
-
-class CompletionUpdate(BaseModel):
-    buyer_checked: bool
-    seller_checked: bool
+    analysis_report: dict[str, Any] = {}
 
 
 class ChatMessageCreate(BaseModel):
@@ -78,6 +249,9 @@ class ChatMessageCreate(BaseModel):
     sender_name: str = "사용자"
     content: str
     message_type: str = "text"
+    recipient_id: str | None = None
+    recipient_name: str | None = None
+    listing_id: str | None = None
 
 
 class ProfileDraftUpsert(BaseModel):
@@ -90,33 +264,48 @@ class ProfileDraftUpsert(BaseModel):
 
 
 class ListingDraftUpsert(BaseModel):
-    draft: dict
+    draft: dict[str, Any]
+    draftId: str | None = None
+    title: str | None = None
 
 
-class LpRecognitionResult(BaseModel):
-    id: str | None = None
-    isRecord: bool
-    confidence: int
-    signals: list[str]
-    source: str
-    persisted: bool = False
-    surfaceScore: int = 0
-    scratchCount: int = 0
-    scratchRisk: str = "low"
-    reflectionRisk: str = "low"
-    scratchRegions: list[dict] = []
-    dustOrReflectionNote: str = "먼지와 반사는 촬영 환경에 따라 함께 나타날 수 있습니다."
-    playbackImpact: str = "낮음"
+class ReviewCreate(BaseModel):
+    revieweeId: str
+    reviewerId: str
+    reviewerName: str | None = None
+    rating: int
+    comment: str | None = None
+    tags: list[str] = []
+    albumId: str | None = None
+    albumTitle: str | None = None
+    transactionId: str | None = None
 
 
-class JacketConditionResult(BaseModel):
-    jacketScore: int
-    jacketGrade: str
-    cornerWear: str
-    ringWear: str
-    stainRisk: str
-    tearOrCreaseRisk: str
-    notes: list[str]
+class ReviewUpdate(BaseModel):
+    rating: int
+    comment: str | None = None
+    tags: list[str] = []
+
+
+class CommentCreate(BaseModel):
+    userId: str = "guest"
+    userName: str = "게스트"
+    role: str = "buyer"
+    content: str
+    parentId: str | None = None
+
+
+class OfferCreate(BaseModel):
+    listingId: str
+    buyerId: str
+    buyerName: str
+    sellerId: str
+    sellerName: str | None = None
+    offerPrice: int
+
+
+class OfferStatusUpdate(BaseModel):
+    status: str
 
 
 MOCK_LISTINGS = [
@@ -128,7 +317,19 @@ MOCK_LISTINGS = [
         "price": 280000,
         "audio_grade": "NM",
         "audio_score": 92,
+        "jacket_grade": "VG+",
+        "jacket_score": 86,
+        "genre": "재즈",
+        "year": 1959,
+        "location": "서울 강남구",
         "seller_id": "seller1",
+        "description": "6-eye 프레스. 표면 상태와 자켓 상태가 좋은 편입니다.",
+        "tags": ["재즈", "초반"],
+        "images": [],
+        "is_rare": True,
+        "is_first_press": True,
+        "views": 234,
+        "created_at": "2026-04-15T00:00:00+00:00",
     },
     {
         "id": "2",
@@ -138,154 +339,746 @@ MOCK_LISTINGS = [
         "price": 420000,
         "audio_grade": "VG+",
         "audio_score": 85,
+        "jacket_grade": "VG",
+        "jacket_score": 78,
+        "genre": "록",
+        "year": 1969,
+        "location": "서울 마포구",
         "seller_id": "seller2",
+        "description": "UK 프레스. 감정서 참고용 표면/자켓 점수를 제공합니다.",
+        "tags": ["록", "희귀"],
+        "images": [],
+        "is_rare": True,
+        "is_first_press": True,
+        "views": 567,
+        "created_at": "2026-04-17T00:00:00+00:00",
+    },
+]
+
+ADDRESS_FALLBACKS = [
+    {
+        "roadAddress": "서울 강남구 강남대로 지하 396",
+        "jibunAddress": "서울 강남구 역삼동 858",
+        "zipCode": "06232",
+        "sido": "서울",
+        "sigungu": "강남구",
+        "detail": "강남역",
+    },
+    {
+        "roadAddress": "서울 마포구 양화로 188",
+        "jibunAddress": "서울 마포구 동교동 165",
+        "zipCode": "04051",
+        "sido": "서울",
+        "sigungu": "마포구",
+        "detail": "홍대입구역",
+    },
+    {
+        "roadAddress": "서울 용산구 이태원로 177",
+        "jibunAddress": "서울 용산구 이태원동 119-23",
+        "zipCode": "04350",
+        "sido": "서울",
+        "sigungu": "용산구",
+        "detail": "이태원역",
+    },
+    {
+        "roadAddress": "서울 중구 명동길 14",
+        "jibunAddress": "서울 중구 명동2가 50-14",
+        "zipCode": "04536",
+        "sido": "서울",
+        "sigungu": "중구",
+        "detail": "명동역 인근",
+    },
+    {
+        "roadAddress": "경기 성남시 분당구 판교역로 166",
+        "jibunAddress": "경기 성남시 분당구 백현동 532",
+        "zipCode": "13529",
+        "sido": "경기",
+        "sigungu": "성남시 분당구",
+        "detail": "판교역",
+    },
+    {
+        "roadAddress": "부산 부산진구 중앙대로 730",
+        "jibunAddress": "부산 부산진구 부전동 573-1",
+        "zipCode": "47254",
+        "sido": "부산",
+        "sigungu": "부산진구",
+        "detail": "서면역",
     },
 ]
 
 
-def normalize_tags(tags: list[str] | str | None) -> list[str]:
-    if isinstance(tags, list):
-        return [str(tag).strip() for tag in tags if str(tag).strip()]
-    if isinstance(tags, str):
-        return [tag.strip() for tag in tags.replace(",", " ").split() if tag.strip()]
-    return []
-
-
-def normalize_json_list(value) -> list:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, list) else []
-        except json.JSONDecodeError:
-            return []
-    return value if isinstance(value, list) else []
-
-
-def normalize_json_dict(value) -> dict:
-    if value is None:
-        return {}
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-            return parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-    return value if isinstance(value, dict) else {}
-
-
-def listing_to_album(listing: dict) -> dict:
-    seller_id = listing.get("seller_id") or listing.get("user_id") or "seller1"
-    price = int(listing.get("price") or 0)
-    created_at = listing.get("created_at") or datetime.now().date().isoformat()
-    if isinstance(created_at, datetime):
-        created_at = created_at.date().isoformat()
-    tags = normalize_tags(listing.get("tags"))
-    images = normalize_json_list(listing.get("images"))
-    analysis_report = normalize_json_dict(listing.get("analysis_report"))
-    audio_score = int(listing.get("audio_score") or analysis_report.get("audioScore") or 78)
-    audio_grade = listing.get("audio_grade") or analysis_report.get("audioGrade") or "VG"
-    jacket_grade = listing.get("jacket_grade") or analysis_report.get("jacketGrade") or "VG"
-    jacket_score = listing.get("jacket_score") or analysis_report.get("jacketScore")
+def user_payload(user_id: str, username: str, email: str, genres: list[str] | None = None) -> dict[str, Any]:
     return {
-        "id": str(listing.get("id")),
-        "title": listing.get("title") or "Untitled LP",
-        "artist": listing.get("artist") or "Unknown Artist",
-        "year": int(listing.get("year") or 0),
-        "genre": listing.get("genre") or (tags[0].replace("#", "") if tags else "LP"),
-        "catalogNumber": listing.get("catalog_number") or "",
-        "catalog_number": listing.get("catalog_number") or "",
+        "id": user_id,
+        "username": username,
+        "email": email,
+        "rating": 0.0,
+        "transactionCount": 0,
+        "genres": genres or [],
+        "emailVerified": True,
+    }
+
+
+def save_user(user: dict[str, Any]) -> None:
+    users = read_json(USERS_PATH, {})
+    users[user["id"]] = {**users.get(user["id"], {}), **user}
+    write_json(USERS_PATH, users)
+
+
+def mask_username(username: str) -> str:
+    if len(username) <= 2:
+        return username[0] + "*" if username else ""
+    return username[:2] + "*" * max(1, len(username) - 2)
+
+
+def verification_code() -> str:
+    return f"{int.from_bytes(os.urandom(4), 'big') % 1_000_000:06d}"
+
+
+def prune_expired_tokens(tokens: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    next_tokens: dict[str, Any] = {}
+    for key, token in tokens.items():
+        try:
+            expires_at = datetime.fromisoformat(str(token.get("expiresAt", "")))
+        except (ValueError, AttributeError):
+            continue
+        if expires_at > now:
+            next_tokens[key] = token
+    return next_tokens
+
+
+def send_mail(to_email: str, subject: str, body: str) -> bool:
+    host = os.getenv("SMTP_HOST", "").strip()
+    port = int(os.getenv("SMTP_PORT", "587"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password = os.getenv("SMTP_PASSWORD", "").strip()
+    sender = os.getenv("SMTP_FROM", user).strip()
+    if not host or not sender:
+        logger.info("SMTP is not configured; skipping mail to %s", to_email)
+        return False
+
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = to_email
+    message["Subject"] = subject
+    message.set_content(body)
+
+    try:
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
+            smtp.starttls()
+            if user:
+                smtp.login(user, password)
+            smtp.send_message(message)
+            return True
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("mail send failed: %s", exc)
+        return False
+
+
+def review_summary_for_user(user_id: str) -> dict[str, Any]:
+    reviews = read_json(REVIEWS_PATH, [])
+    user_reviews = [review for review in reviews if str(review.get("revieweeId")) == user_id]
+    count = len(user_reviews)
+    average = round(sum(float(review.get("rating", 0)) for review in user_reviews) / count, 1) if count else 0.0
+    return {"average": average, "count": count}
+
+
+def update_user_review_stats(user_id: str) -> dict[str, Any] | None:
+    users = read_json(USERS_PATH, {})
+    user = users.get(user_id)
+    if not user:
+        return None
+    summary = review_summary_for_user(user_id)
+    user["rating"] = summary["average"]
+    user["transactionCount"] = summary["count"]
+    user["updatedAt"] = now_iso()
+    users[user_id] = user
+    write_json(USERS_PATH, users)
+    return public_user(user)
+
+
+async def google_profile_from_credential(credential: str) -> dict[str, Any]:
+    client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+    try:
+        async with httpx.AsyncClient(timeout=6) as client:
+            response = await client.get("https://oauth2.googleapis.com/tokeninfo", params={"id_token": credential})
+            response.raise_for_status()
+            profile = response.json()
+    except httpx.HTTPError as exc:
+        if client_id:
+            raise HTTPException(status_code=401, detail="Google 인증 토큰을 검증하지 못했습니다.") from exc
+        profile = decode_jwt_payload(credential)
+
+    email = normalize_email(str(profile.get("email", "")))
+    if not email:
+        raise HTTPException(status_code=401, detail="Google 계정 이메일을 확인하지 못했습니다.")
+    if str(profile.get("email_verified", "true")).lower() not in {"true", "1"}:
+        raise HTTPException(status_code=401, detail="Google 이메일 인증이 완료되지 않은 계정입니다.")
+    if client_id and profile.get("aud") and str(profile["aud"]) != client_id:
+        raise HTTPException(status_code=401, detail="Google 로그인 설정이 현재 앱과 일치하지 않습니다.")
+
+    return {
+        "email": email,
+        "name": str(profile.get("name") or profile.get("given_name") or email.split("@")[0]),
+        "googleSub": str(profile.get("sub") or stable_id("google-sub", email)),
+        "picture": str(profile.get("picture") or ""),
+    }
+
+
+def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
+    price = int(item.get("price") or 0)
+    seller_id = item.get("seller_id") or item.get("user_id") or "seller1"
+    users = read_json(USERS_PATH, {})
+    seller = users.get(str(seller_id), {}) if isinstance(users, dict) else {}
+    seller_name = (
+        seller.get("username")
+        or seller.get("name")
+        or item.get("seller_name")
+        or item.get("sellerName")
+        or str(seller_id)
+        or "판매자"
+    )
+    analysis_report = item.get("analysis_report") if isinstance(item.get("analysis_report"), dict) else {}
+    audio_samples = item.get("audio_samples") or item.get("audioSamples") or analysis_report.get("audioSamples") or {}
+    cover_image = item.get("cover_image_data_url") or item.get("coverImageDataUrl") or analysis_report.get("coverImageDataUrl")
+    record_image = item.get("record_image_data_url") or item.get("recordImageDataUrl") or analysis_report.get("recordImageDataUrl")
+    record_video = item.get("record_video_data_url") or item.get("recordVideoDataUrl") or analysis_report.get("recordVideoDataUrl")
+    return {
+        "id": str(item.get("id") or stable_id("listing", json.dumps(item, ensure_ascii=False))),
+        "title": item.get("title") or "Untitled",
+        "artist": item.get("artist") or "Unknown artist",
+        "year": int(item.get("year") or 0),
+        "genre": item.get("genre") or "기타",
+        "catalogNumber": item.get("catalog_number") or item.get("catalogNumber") or "",
         "price": price,
-        "priceRange": {
-            "min": max(0, int(price * 0.85)),
-            "max": int(price * 1.15) if price else 0,
-        },
-        "audioGrade": audio_grade,
-        "audioScore": audio_score,
-        "audio_grade": audio_grade,
-        "audio_score": audio_score,
-        "jacketGrade": jacket_grade,
-        "jacketScore": jacket_score,
-        "isRare": bool(listing.get("is_rare")),
-        "isFirstPress": bool(listing.get("is_first_press")),
-        "ownedByMe": bool(listing.get("owned_by_me")),
-        "images": images,
-        "description": listing.get("description") or "",
-        "analysisReport": analysis_report,
+        "priceRange": {"min": int(price * 0.9), "max": int(price * 1.12)},
+        "audioGrade": item.get("audio_grade") or item.get("audioGrade") or "VG",
+        "audioScore": int(item.get("audio_score") or item.get("audioScore") or 0),
+        "audioSamples": audio_samples if isinstance(audio_samples, dict) else {},
+        "jacketGrade": item.get("jacket_grade") or item.get("jacketGrade") or "VG",
+        "jacketScore": int(item.get("jacket_score") or item.get("jacketScore") or 0),
+        "isRare": bool(item.get("is_rare") or item.get("isRare")),
+        "isFirstPress": bool(item.get("is_first_press") or item.get("isFirstPress")),
+        "images": item.get("images") if isinstance(item.get("images"), list) else [],
+        "coverImageDataUrl": cover_image or "",
+        "recordImageDataUrl": record_image or "",
+        "recordVideoDataUrl": record_video or "",
+        "description": item.get("description") or "",
         "seller": {
             "id": seller_id,
-            "name": "내 판매글" if listing.get("owned_by_me") else seller_id,
-            "rating": 5.0,
-            "transactionCount": 0,
+            "name": seller_name,
+            "rating": float(seller.get("rating", 0) or 0),
+            "transactionCount": int(seller.get("transactionCount", 0) or 0),
         },
-        "seller_id": seller_id,
-        "location": listing.get("location") or "지역 미입력",
-        "views": int(listing.get("views") or 0),
-        "createdAt": str(created_at),
+        "location": item.get("location") or "서울",
+        "views": int(item.get("views") or 0),
+        "createdAt": item.get("created_at") or item.get("createdAt") or now_iso(),
+        "status": item.get("status") or "published",
     }
 
 
-def read_file_listings() -> list[dict]:
-    try:
-        with open(SERVER_LISTINGS_PATH, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            return data if isinstance(data, list) else []
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
+def all_albums() -> list[dict[str, Any]]:
+    return [
+        listing_to_album(item)
+        for item in read_json(LISTINGS_PATH, [])
+        if str(item.get("status") or "published") != "hidden"
+    ]
 
 
-def write_file_listings(listings: list[dict]) -> None:
-    os.makedirs(SERVER_DATA_DIR, exist_ok=True)
-    with open(SERVER_LISTINGS_PATH, "w", encoding="utf-8") as file:
-        json.dump(listings, file, ensure_ascii=False, indent=2)
+def find_album(listing_id: str) -> dict[str, Any] | None:
+    return next((album for album in all_albums() if str(album.get("id")) == str(listing_id)), None)
 
 
-def read_file_chats() -> dict:
-    try:
-        with open(SERVER_CHATS_PATH, "r", encoding="utf-8") as file:
-            data = json.load(file)
-            return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+@app.get("/health")
+async def health():
+    return {"ok": True, "service": "vinyl-check-api"}
 
 
-def write_file_chats(chats: dict) -> None:
-    os.makedirs(SERVER_DATA_DIR, exist_ok=True)
-    with open(SERVER_CHATS_PATH, "w", encoding="utf-8") as file:
-        json.dump(chats, file, ensure_ascii=False, indent=2)
+@app.post("/auth/login")
+async def login(payload: AuthLogin):
+    username = payload.username.strip()
+    if not username or not payload.password:
+        raise HTTPException(status_code=400, detail="아이디와 비밀번호를 입력해 주세요.")
+    users = read_json(USERS_PATH, {})
+    user = find_user_for_login(users, username)
+    if user and not user.get("passwordHash"):
+        raise HTTPException(status_code=401, detail="이전 임시 계정입니다. 같은 아이디와 이메일로 회원가입을 다시 완료해 비밀번호를 등록해 주세요.")
+    if not user or not verify_password(payload.password, user.get("passwordHash")):
+        raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
+    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
 
 
-def normalize_chat_message(message: dict) -> dict:
+@app.post("/auth/check")
+async def check_auth_availability(payload: AuthCheck):
+    users = read_json(USERS_PATH, {})
+    username_taken = bool(payload.username and find_user_by_username(users, payload.username))
+    email_taken = bool(payload.email and find_user_by_email(users, payload.email))
+    return {"usernameTaken": username_taken, "emailTaken": email_taken, "available": not username_taken and not email_taken}
+
+
+@app.post("/auth/email-verification/request")
+async def request_email_verification(payload: EmailVerificationRequest):
+    email = normalize_email(payload.email)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="올바른 이메일을 입력해 주세요.")
+    users = read_json(USERS_PATH, {})
+    if find_user_by_email(users, email):
+        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
+
+    code = verification_code()
+    token_key = f"email:{email}:{code}"
+    tokens = prune_expired_tokens(read_json(EMAIL_VERIFICATION_PATH, {}))
+    tokens[token_key] = {
+        "type": "email-verification",
+        "email": email,
+        "code": code,
+        "verified": False,
+        "createdAt": now_iso(),
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+    }
+    write_json(EMAIL_VERIFICATION_PATH, tokens)
+    sent = send_mail(
+        email,
+        "[Vinyl-Check] 이메일 인증번호",
+        f"Vinyl-Check 회원가입 이메일 인증번호입니다.\n\n{code}\n\n이 코드는 10분 후 만료됩니다.",
+    )
+    response = {"message": "인증번호를 이메일로 발송했습니다.", "sent": sent}
+    if not sent:
+        response["message"] = "메일 발송 설정이 없어 개발용 인증번호를 표시합니다."
+        response["devVerificationCode"] = code
+    return response
+
+
+@app.post("/auth/email-verification/confirm")
+async def confirm_email_verification(payload: EmailVerificationConfirm):
+    email = normalize_email(payload.email)
+    code = payload.code.strip()
+    token_key = f"email:{email}:{code}"
+    tokens = prune_expired_tokens(read_json(EMAIL_VERIFICATION_PATH, {}))
+    token = tokens.get(token_key)
+    if not token:
+        write_json(EMAIL_VERIFICATION_PATH, tokens)
+        raise HTTPException(status_code=400, detail="인증번호가 올바르지 않거나 만료되었습니다.")
+    if str(token.get("email")) != email:
+        raise HTTPException(status_code=400, detail="이메일과 인증번호가 일치하지 않습니다.")
+
+    verification_token = f"email-verified-{uuid4().hex}"
+    token["verified"] = True
+    token["verificationToken"] = verification_token
+    token["verifiedAt"] = now_iso()
+    token["expiresAt"] = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+    tokens[token_key] = token
+    write_json(EMAIL_VERIFICATION_PATH, tokens)
+    return {"message": "이메일 인증이 완료되었습니다.", "verificationToken": verification_token}
+
+
+@app.post("/auth/signup")
+async def signup(payload: AuthSignup):
+    username = payload.username.strip()
+    email = normalize_email(payload.email)
+    if not username or not email:
+        raise HTTPException(status_code=400, detail="아이디와 이메일을 입력해 주세요.")
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="비밀번호는 8자 이상이어야 합니다.")
+    users = read_json(USERS_PATH, {})
+    username_user = find_user_by_username(users, username)
+    email_user = find_user_by_email(users, email)
+    existing = username_user or email_user
+    if username_user and normalize_email(str(username_user.get("email", ""))) != email:
+        raise HTTPException(status_code=409, detail="이미 사용 중인 아이디입니다.")
+    if email_user and normalize_username(str(email_user.get("username", ""))) != normalize_username(username):
+        raise HTTPException(status_code=409, detail="이미 사용 중인 이메일입니다.")
+    if existing and existing.get("passwordHash"):
+        raise HTTPException(status_code=409, detail="이미 가입된 계정입니다. 로그인해 주세요.")
+    verification_token = (payload.emailVerificationToken or "").strip()
+    tokens = prune_expired_tokens(read_json(EMAIL_VERIFICATION_PATH, {}))
+    verified_key = next(
+        (
+            key for key, token in tokens.items()
+            if token.get("verified")
+            and str(token.get("email")) == email
+            and str(token.get("verificationToken")) == verification_token
+        ),
+        "",
+    )
+    if not verified_key:
+        write_json(EMAIL_VERIFICATION_PATH, tokens)
+        raise HTTPException(status_code=400, detail="이메일 인증을 먼저 완료해 주세요.")
+    user = user_payload(existing.get("id") if existing else stable_id("user", email), username, email, payload.genres[:5])
+    user["passwordHash"] = hash_password(payload.password)
+    user["authProvider"] = "password"
+    user["emailVerified"] = True
+    user["createdAt"] = existing.get("createdAt") if existing else now_iso()
+    user["updatedAt"] = now_iso()
+    save_user(user)
+    tokens.pop(verified_key, None)
+    write_json(EMAIL_VERIFICATION_PATH, tokens)
+    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
+
+
+@app.post("/auth/google")
+async def google_login(payload: GoogleLogin):
+    if payload.credential:
+        profile = await google_profile_from_credential(payload.credential)
+        email = profile["email"]
+        name = profile["name"]
+        google_sub = profile["googleSub"]
+        picture = profile["picture"]
+        email_verified = True
+    else:
+        if os.getenv("ALLOW_DEV_GOOGLE_LOGIN", "true").lower() not in {"1", "true", "yes"}:
+            raise HTTPException(status_code=400, detail="Google Client ID 설정이 필요합니다.")
+        email = normalize_email(payload.email or "google-user@vinyl-check.local")
+        name = payload.name or email.split("@")[0] or "Google User"
+        google_sub = stable_id("google-sub", email)
+        picture = ""
+        email_verified = True
+
+    users = read_json(USERS_PATH, {})
+    existing = find_user_by_email(users, email)
+    user = user_payload(existing.get("id") if existing else stable_id("google", email), existing.get("username", name) if existing else name, email, existing.get("genres", ["재즈"]) if existing else ["재즈"])
+    if existing and existing.get("passwordHash"):
+        user["passwordHash"] = existing["passwordHash"]
+        user["authProvider"] = "password,google" if existing.get("authProvider") == "password" else existing.get("authProvider", "google")
+    else:
+        user["authProvider"] = existing.get("authProvider", "google") if existing else "google"
+    user["googleSub"] = google_sub
+    if picture:
+        user["avatarUrl"] = picture
+    user["emailVerified"] = email_verified
+    user["createdAt"] = existing.get("createdAt") if existing else now_iso()
+    user["updatedAt"] = now_iso()
+    save_user(user)
+    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
+
+
+@app.post("/auth/find-id")
+async def find_id(payload: FindIdRequest):
+    email = normalize_email(payload.email)
+    users = read_json(USERS_PATH, {})
+    user = find_user_by_email(users, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="해당 이메일로 가입된 계정을 찾지 못했습니다.")
+    username = str(user.get("username", ""))
+    return {"message": "가입된 아이디를 찾았습니다.", "username": username, "maskedUsername": mask_username(username)}
+
+
+@app.post("/auth/password-reset/request")
+async def password_reset_request(payload: PasswordResetRequest):
+    login_id = payload.loginId.strip()
+    users = read_json(USERS_PATH, {})
+    user = find_user_for_login(users, login_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="입력한 계정을 찾지 못했습니다.")
+    email = normalize_email(str(user.get("email", "")))
+    if not email:
+        raise HTTPException(status_code=400, detail="계정에 이메일이 없어 비밀번호를 재설정할 수 없습니다.")
+    reset_code = verification_code()
+    tokens = read_json(RESET_TOKENS_PATH, {})
+    token_key = f"password-reset:{reset_code}"
+    tokens[token_key] = {
+        "type": "password-reset",
+        "userId": user["id"],
+        "email": email,
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
+        "used": False,
+    }
+    write_json(RESET_TOKENS_PATH, tokens)
+    mail_sent = send_mail(
+        email,
+        "[Vinyl-Check] 비밀번호 재설정 코드",
+        f"아래 코드를 앱의 비밀번호 찾기 화면에 입력해 주세요.\n\n{reset_code}\n\n이 코드는 30분 후 만료됩니다.",
+    )
+    response = {
+        "message": "가입된 이메일로 비밀번호 재설정 코드를 발송했습니다."
+        if mail_sent
+        else "메일 설정이 없어 앱 화면에 재설정 코드를 표시합니다."
+    }
+    if not mail_sent or os.getenv("ALLOW_DEV_RESET_CODE", "false").lower() in {"1", "true", "yes"}:
+        response["devResetCode"] = reset_code
+    return response
+
+
+@app.post("/auth/password-reset/confirm")
+async def password_reset_confirm(payload: PasswordResetConfirm):
+    if len(payload.password) < 8:
+        raise HTTPException(status_code=400, detail="비밀번호는 8자 이상이어야 합니다.")
+    tokens = read_json(RESET_TOKENS_PATH, {})
+    reset_code = payload.resetCode.strip()
+    token_key = f"password-reset:{reset_code}"
+    token = tokens.get(token_key) or tokens.get(reset_code)
+    if not token or token.get("used"):
+        raise HTTPException(status_code=400, detail="유효하지 않은 재설정 코드입니다.")
+    expires_at = datetime.fromisoformat(str(token["expiresAt"]))
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="만료된 재설정 코드입니다.")
+    users = read_json(USERS_PATH, {})
+    user = users.get(token["userId"])
+    if not user:
+        raise HTTPException(status_code=404, detail="계정을 찾지 못했습니다.")
+    user["passwordHash"] = hash_password(payload.password)
+    auth_provider = str(user.get("authProvider") or "")
+    user["authProvider"] = auth_provider if "password" in auth_provider else ",".join(part for part in [auth_provider, "password"] if part)
+    user["updatedAt"] = now_iso()
+    users[user["id"]] = user
+    token["used"] = True
+    tokens[token_key if token_key in tokens else reset_code] = token
+    write_json(USERS_PATH, users)
+    write_json(RESET_TOKENS_PATH, tokens)
+    return {"message": "비밀번호가 재설정되었습니다. 새 비밀번호로 로그인해 주세요."}
+
+
+@app.get("/users/{user_id}/profile-draft")
+async def get_profile_draft(user_id: str):
+    users = read_json(USERS_PATH, {})
+    profile = users.get(user_id)
+    return {"persisted": bool(profile), "profile": public_user(profile) if profile else None}
+
+
+@app.put("/users/{user_id}/profile-draft")
+async def upsert_profile_draft(user_id: str, payload: ProfileDraftUpsert):
+    profile = {
+        "id": user_id,
+        "username": payload.username.strip() or "VinylLover",
+        "email": payload.email or "user@example.com",
+        "rating": max(0.0, min(5.0, payload.rating)),
+        "transactionCount": max(0, int(payload.transactionCount)),
+        "genres": [genre.strip() for genre in payload.genres if genre.strip()][:5],
+        "emailVerified": payload.emailVerified,
+        "updatedAt": now_iso(),
+    }
+    save_user(profile)
+    return {"persisted": True, "profile": profile}
+
+
+@app.get("/users/{user_id}/listing-draft")
+async def get_listing_draft(user_id: str):
+    drafts = read_json(os.path.join(DATA_DIR, "drafts.json"), {})
+    user_drafts = drafts.get(user_id)
+    if isinstance(user_drafts, list):
+        draft = user_drafts[0]["draft"] if user_drafts else None
+    else:
+        draft = user_drafts
+    return {"persisted": bool(draft), "draft": draft}
+
+
+@app.put("/users/{user_id}/listing-draft")
+async def upsert_listing_draft(user_id: str, payload: ListingDraftUpsert):
+    drafts_path = os.path.join(DATA_DIR, "drafts.json")
+    drafts = read_json(drafts_path, {})
+    user_drafts = drafts.get(user_id)
+    if not isinstance(user_drafts, list):
+        user_drafts = [{
+            "id": f"draft-{uuid4().hex[:10]}",
+            "title": "기존 임시저장",
+            "draft": user_drafts,
+            "updatedAt": now_iso(),
+        }] if isinstance(user_drafts, dict) else []
+    draft_id = payload.draftId or f"draft-{uuid4().hex[:10]}"
+    title = (payload.title or str(payload.draft.get("formData", {}).get("title") or "") or "제목 없는 판매글").strip()
+    entry = {"id": draft_id, "title": title, "draft": payload.draft, "updatedAt": now_iso()}
+    user_drafts = [entry, *[item for item in user_drafts if str(item.get("id")) != draft_id]]
+    drafts[user_id] = user_drafts[:20]
+    write_json(drafts_path, drafts)
+    return {"persisted": True, "draft": payload.draft, "draftEntry": entry, "drafts": drafts[user_id], "updatedAt": entry["updatedAt"]}
+
+
+@app.get("/users/{user_id}/listing-drafts")
+async def list_listing_drafts(user_id: str):
+    drafts = read_json(os.path.join(DATA_DIR, "drafts.json"), {})
+    user_drafts = drafts.get(user_id)
+    if isinstance(user_drafts, dict):
+        user_drafts = [{"id": "legacy", "title": "기존 임시저장", "draft": user_drafts, "updatedAt": now_iso()}]
+    if not isinstance(user_drafts, list):
+        user_drafts = []
+    return {"persisted": bool(user_drafts), "drafts": user_drafts}
+
+
+@app.get("/users/{user_id}/listing-drafts/{draft_id}")
+async def get_listing_draft_by_id(user_id: str, draft_id: str):
+    drafts = read_json(os.path.join(DATA_DIR, "drafts.json"), {})
+    user_drafts = drafts.get(user_id)
+    if isinstance(user_drafts, dict) and draft_id == "legacy":
+        return {"persisted": True, "draft": user_drafts}
+    if not isinstance(user_drafts, list):
+        raise HTTPException(status_code=404, detail="임시저장을 찾을 수 없습니다.")
+    entry = next((item for item in user_drafts if str(item.get("id")) == draft_id), None)
+    if not entry:
+        raise HTTPException(status_code=404, detail="임시저장을 찾을 수 없습니다.")
+    return {"persisted": True, "draft": entry.get("draft"), "draftEntry": entry}
+
+
+@app.delete("/users/{user_id}/listing-draft")
+async def delete_listing_draft(user_id: str):
+    drafts_path = os.path.join(DATA_DIR, "drafts.json")
+    drafts = read_json(drafts_path, {})
+    deleted = user_id in drafts
+    drafts.pop(user_id, None)
+    write_json(drafts_path, drafts)
+    return {"deleted": deleted}
+
+
+@app.delete("/users/{user_id}/listing-drafts/{draft_id}")
+async def delete_listing_draft_by_id(user_id: str, draft_id: str):
+    drafts_path = os.path.join(DATA_DIR, "drafts.json")
+    drafts = read_json(drafts_path, {})
+    user_drafts = drafts.get(user_id)
+    if not isinstance(user_drafts, list):
+        return {"deleted": False}
+    next_drafts = [item for item in user_drafts if str(item.get("id")) != draft_id]
+    drafts[user_id] = next_drafts
+    write_json(drafts_path, drafts)
+    return {"deleted": len(next_drafts) != len(user_drafts)}
+
+
+@app.post("/reviews")
+async def create_review(payload: ReviewCreate):
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=400, detail="리뷰 점수는 1점부터 5점까지 입력할 수 있습니다.")
+    users = read_json(USERS_PATH, {})
+    if payload.revieweeId not in users:
+        users[payload.revieweeId] = user_payload(payload.revieweeId, payload.revieweeId, f"{payload.revieweeId}@vinyl-check.local", [])
+        users[payload.revieweeId]["emailVerified"] = False
+        write_json(USERS_PATH, users)
+    reviewer_name = payload.reviewerName or users.get(payload.reviewerId, {}).get("username") or "Vinyl-Check user"
+    review = {
+        "id": f"review-{uuid4().hex[:12]}",
+        "revieweeId": payload.revieweeId,
+        "reviewerId": payload.reviewerId,
+        "reviewerName": reviewer_name,
+        "rating": int(payload.rating),
+        "comment": (payload.comment or "").strip(),
+        "tags": [tag.strip() for tag in payload.tags if tag.strip()][:8],
+        "albumId": payload.albumId,
+        "albumTitle": payload.albumTitle,
+        "transactionId": payload.transactionId,
+        "createdAt": now_iso(),
+    }
+    reviews = read_json(REVIEWS_PATH, [])
+    reviews.append(review)
+    write_json(REVIEWS_PATH, reviews)
+    updated_user = update_user_review_stats(payload.revieweeId)
+    return {"review": review, "summary": review_summary_for_user(payload.revieweeId), "user": updated_user}
+
+
+@app.get("/users/{user_id}/reviews")
+async def get_user_reviews(user_id: str):
+    reviews = read_json(REVIEWS_PATH, [])
+    user_reviews = [review for review in reviews if str(review.get("revieweeId")) == user_id]
+    user_reviews.sort(key=lambda review: str(review.get("createdAt", "")), reverse=True)
+    return {"reviews": user_reviews}
+
+
+@app.get("/users/{user_id}/review-summary")
+async def get_user_review_summary(user_id: str):
+    user = update_user_review_stats(user_id)
+    summary = review_summary_for_user(user_id)
+    return {**summary, "user": user}
+
+
+@app.put("/reviews/{review_id}")
+async def update_review(review_id: str, payload: ReviewUpdate, reviewer_id: str | None = None):
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(status_code=400, detail="리뷰 점수는 1점부터 5점까지 입력할 수 있습니다.")
+    reviews = read_json(REVIEWS_PATH, [])
+    updated: dict[str, Any] | None = None
+    for review in reviews:
+        if str(review.get("id")) == review_id:
+            if reviewer_id and str(review.get("reviewerId")) != reviewer_id:
+                raise HTTPException(status_code=403, detail="리뷰를 수정할 권한이 없습니다.")
+            review["rating"] = int(payload.rating)
+            review["comment"] = (payload.comment or "").strip()
+            review["tags"] = [tag.strip() for tag in payload.tags if tag.strip()][:8]
+            review["updatedAt"] = now_iso()
+            updated = review
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="리뷰를 찾을 수 없습니다.")
+    write_json(REVIEWS_PATH, reviews)
+    updated_user = update_user_review_stats(str(updated.get("revieweeId")))
+    return {"review": updated, "summary": review_summary_for_user(str(updated.get("revieweeId"))), "user": updated_user}
+
+
+@app.delete("/reviews/{review_id}")
+async def delete_review(review_id: str, reviewer_id: str | None = None):
+    reviews = read_json(REVIEWS_PATH, [])
+    target = next((review for review in reviews if str(review.get("id")) == review_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="리뷰를 찾을 수 없습니다.")
+    if reviewer_id and str(target.get("reviewerId")) != reviewer_id:
+        raise HTTPException(status_code=403, detail="리뷰를 삭제할 권한이 없습니다.")
+    next_reviews = [review for review in reviews if str(review.get("id")) != review_id]
+    write_json(REVIEWS_PATH, next_reviews)
+    update_user_review_stats(str(target.get("revieweeId")))
+    return {"deleted": True, "reviewId": review_id}
+
+
+def normalize_chat_message(chat_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     return {
-        "id": str(message.get("id") or f"msg-{int(datetime.now().timestamp() * 1000)}"),
-        "chatId": str(message.get("chatId") or message.get("chat_id") or ""),
-        "senderId": str(message.get("senderId") or message.get("sender_id") or ""),
-        "senderName": str(message.get("senderName") or message.get("sender_name") or "사용자"),
-        "message": str(message.get("message") or message.get("content") or ""),
-        "timestamp": str(message.get("timestamp") or message.get("created_at") or datetime.now().isoformat()),
-        "type": str(message.get("type") or message.get("message_type") or "text"),
+        "id": str(payload.get("id") or f"msg-{uuid4().hex[:12]}"),
+        "chatId": chat_id,
+        "senderId": str(payload.get("senderId") or payload.get("sender_id") or "buyer1"),
+        "senderName": str(payload.get("senderName") or payload.get("sender_name") or "사용자"),
+        "recipientId": str(payload.get("recipientId") or payload.get("recipient_id") or ""),
+        "recipientName": str(payload.get("recipientName") or payload.get("recipient_name") or ""),
+        "listingId": str(payload.get("listingId") or payload.get("listing_id") or chat_id),
+        "message": str(payload.get("message") or payload.get("content") or ""),
+        "timestamp": str(payload.get("timestamp") or payload.get("created_at") or now_iso()),
+        "type": str(payload.get("type") or payload.get("message_type") or "text"),
     }
+
+
+CHAT_SEPARATOR = "__dm__"
+
+
+def chat_part(value: str | None) -> str:
+    raw = str(value or "unknown").strip() or "unknown"
+    return quote(raw, safe="")
+
+
+def make_one_to_one_chat_id(listing_id: str | None, user_a: str | None, user_b: str | None) -> str:
+    users = sorted([chat_part(user_a), chat_part(user_b)])
+    return f"{chat_part(listing_id)}{CHAT_SEPARATOR}{users[0]}__{users[1]}"
+
+
+def listing_id_from_chat_id(chat_id: str) -> str:
+    return str(chat_id).split(CHAT_SEPARATOR, 1)[0]
+
+
+def participant_ids_from_chat_id(chat_id: str) -> list[str]:
+    if CHAT_SEPARATOR not in chat_id:
+        return []
+    tail = str(chat_id).split(CHAT_SEPARATOR, 1)[1]
+    return [part for part in tail.split("__") if part]
+
+
+def canonical_chat_id(chat_id: str, payload: ChatMessageCreate) -> str:
+    if CHAT_SEPARATOR in chat_id:
+        return chat_id
+    if payload.listing_id and payload.sender_id and payload.recipient_id:
+        return make_one_to_one_chat_id(payload.listing_id, payload.sender_id, payload.recipient_id)
+    return chat_id
 
 
 class ChatConnectionManager:
-    def __init__(self):
+    def __init__(self) -> None:
         self.rooms: dict[str, list[WebSocket]] = {}
 
-    async def connect(self, chat_id: str, websocket: WebSocket):
+    async def connect(self, chat_id: str, websocket: WebSocket) -> None:
         await websocket.accept()
         self.rooms.setdefault(chat_id, []).append(websocket)
 
-    def disconnect(self, chat_id: str, websocket: WebSocket):
-        room = self.rooms.get(chat_id)
-        if not room:
-            return
+    def disconnect(self, chat_id: str, websocket: WebSocket) -> None:
+        room = self.rooms.get(chat_id, [])
         if websocket in room:
             room.remove(websocket)
         if not room:
             self.rooms.pop(chat_id, None)
 
-    async def broadcast(self, chat_id: str, payload: dict):
+    async def broadcast(self, chat_id: str, payload: dict[str, Any]) -> None:
         stale: list[WebSocket] = []
         for websocket in self.rooms.get(chat_id, []):
             try:
@@ -298,563 +1091,417 @@ class ChatConnectionManager:
 
 chat_manager = ChatConnectionManager()
 
-MOCK_DISCOGS_CANDIDATES = [
-    {
-        "id": "kind-of-blue-cl-1355",
-        "title": "Kind of Blue",
-        "artist": "Miles Davis",
-        "year": 1959,
-        "label": "Columbia 6-eye",
-        "catalogNumber": "CL 1355",
-        "country": "US",
-        "confidence": 96,
-    },
-    {
-        "id": "abbey-road-pcs-7088",
-        "title": "Abbey Road",
-        "artist": "The Beatles",
-        "year": 1969,
-        "label": "Apple",
-        "catalogNumber": "PCS 7088",
-        "country": "UK",
-        "confidence": 94,
-    },
-    {
-        "id": "blue-train-blp-1577",
-        "title": "Blue Train",
-        "artist": "John Coltrane",
-        "year": 1957,
-        "label": "Blue Note",
-        "catalogNumber": "BLP 1577",
-        "country": "US",
-        "confidence": 91,
-    },
-]
 
-MOCK_TRACKLISTS = {
-    "CL 1355": [
-        {"position": "A1", "title": "So What", "duration": "9:22"},
-        {"position": "A2", "title": "Freddie Freeloader", "duration": "9:46"},
-        {"position": "A3", "title": "Blue In Green", "duration": "5:37"},
-        {"position": "B1", "title": "All Blues", "duration": "11:33"},
-        {"position": "B2", "title": "Flamenco Sketches", "duration": "9:26"},
-    ],
-    "PCS 7088": [
-        {"position": "A1", "title": "Come Together", "duration": "4:20"},
-        {"position": "A2", "title": "Something", "duration": "3:03"},
-        {"position": "A3", "title": "Maxwell's Silver Hammer", "duration": "3:27"},
-        {"position": "B1", "title": "Here Comes The Sun", "duration": "3:05"},
-        {"position": "B2", "title": "Because", "duration": "2:45"},
-    ],
-    "BLP 1577": [
-        {"position": "A1", "title": "Blue Train", "duration": "10:43"},
-        {"position": "A2", "title": "Moment's Notice", "duration": "9:10"},
-        {"position": "B1", "title": "Locomotion", "duration": "7:12"},
-        {"position": "B2", "title": "I'm Old Fashioned", "duration": "7:55"},
-        {"position": "B3", "title": "Lazy Bird", "duration": "7:03"},
-    ],
-}
-
-
-def seconds_from_duration(duration: str | None) -> int:
-    if not duration or ":" not in duration:
-        return 0
-    parts = duration.split(":")
-    try:
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-    except ValueError:
-        return 0
-    return 0
-
-
-def normalize_track(item: dict, index: int) -> dict:
-    return {
-        "position": str(item.get("position") or f"T{index + 1}"),
-        "title": str(item.get("title") or f"Track {index + 1}"),
-        "duration": str(item.get("duration") or ""),
-        "durationSeconds": seconds_from_duration(str(item.get("duration") or "")),
-    }
-
-
-def recommend_audio_tracks(tracklist: list[dict]) -> dict:
-    tracks = [normalize_track(item, index) for index, item in enumerate(tracklist) if item.get("type_") in (None, "track")]
-    if not tracks:
-        tracks = [normalize_track(item, index) for index, item in enumerate(tracklist)]
-    if not tracks:
-        tracks = [{"position": "A1", "title": "첫 번째 트랙", "duration": "", "durationSeconds": 0}]
-
-    excluded_words = ("intro", "outro", "interlude", "reprise", "skit")
-    usable = [
-        track for track in tracks
-        if not any(word in track["title"].lower() for word in excluded_words)
-        and (track["durationSeconds"] == 0 or 150 <= track["durationSeconds"] <= 720)
-    ]
-    if not usable:
-        usable = tracks
-
-    good_index = min(len(usable) - 1, max(0, len(usable) // 2))
-    good_track = usable[good_index]
-    noise_track = next((track for track in tracks if track["position"].upper().startswith("A1")), tracks[0])
-
-    return {
-        "tracks": tracks,
-        "good": {
-            **good_track,
-            "label": "good",
-            "guide": "음악이 안정적으로 이어지는 중간 15~20초를 녹음하세요.",
-            "suggestedStart": "중간부",
-            "recordSeconds": 20,
-        },
-        "noisy": {
-            **noise_track,
-            "label": "noisy",
-            "guide": "트랙 시작 직후나 곡 사이 조용한 10~15초를 녹음하세요.",
-            "suggestedStart": "시작부 0~15초",
-            "recordSeconds": 15,
-        },
-    }
-
-
-def mock_track_recommendations(catalog_number: str | None) -> dict:
-    normalized = (catalog_number or "").strip().upper()
-    tracklist = MOCK_TRACKLISTS.get(normalized) or MOCK_TRACKLISTS["CL 1355"]
-    recommendations = recommend_audio_tracks(tracklist)
-    return {
-        **recommendations,
-        "source": "mock",
-        "releaseTitle": "Discogs 후보",
-        "catalogNumber": catalog_number or "",
-    }
-
-
-@app.on_event("startup")
-async def startup():
-    global db_pool
-    database_url = os.getenv("DATABASE_URL")
-    if database_url:
-        db_pool = await asyncpg.create_pool(database_url, min_size=1, max_size=4)
-        async with db_pool.acquire() as connection:
-            await connection.execute(
-                """
-                create table if not exists user_profile_drafts (
-                  user_id text primary key,
-                  username text not null,
-                  email text,
-                  rating numeric(3, 1) not null default 5.0,
-                  transaction_count integer not null default 0,
-                  genres jsonb not null default '[]'::jsonb,
-                  email_verified boolean not null default true,
-                  updated_at timestamptz not null default now()
-                )
-                """
-            )
-            await connection.execute(
-                """
-                create table if not exists user_listing_drafts (
-                  user_id text primary key,
-                  draft jsonb not null default '{}'::jsonb,
-                  updated_at timestamptz not null default now()
-                )
-                """
-            )
-            await connection.execute(
-                """
-                create table if not exists listings (
-                  id text primary key,
-                  seller_id text not null,
-                  title text not null,
-                  artist text,
-                  catalog_number text,
-                  price integer not null,
-                  description text,
-                  tags jsonb not null default '[]'::jsonb,
-                  images jsonb not null default '[]'::jsonb,
-                  genre text,
-                  year integer,
-                  location text,
-                  audio_grade text,
-                  audio_score integer,
-                  jacket_grade text,
-                  jacket_score integer,
-                  is_rare boolean not null default false,
-                  is_first_press boolean not null default false,
-                  analysis_report jsonb not null default '{}'::jsonb,
-                  views integer not null default 0,
-                  created_at timestamptz not null default now()
-                )
-                """
-            )
-            await connection.execute(
-                """
-                create table if not exists realtime_chat_messages (
-                  id text primary key,
-                  chat_id text not null,
-                  sender_id text not null,
-                  sender_name text not null,
-                  content text not null,
-                  message_type text not null default 'text',
-                  created_at timestamptz not null default now()
-                )
-                """
-            )
-
-
-@app.on_event("shutdown")
-async def shutdown():
-    if db_pool:
-        await db_pool.close()
-
-
-def mock_discogs_candidates(catalog_number: str | None):
-    normalized = (catalog_number or "").strip().lower()
-    if not normalized:
-        return []
-
-    exact = [
-        candidate
-        for candidate in MOCK_DISCOGS_CANDIDATES
-        if candidate["catalogNumber"].lower() == normalized
-    ]
-    if exact:
-        return exact
-
-    partial = [
-        candidate
-        for candidate in MOCK_DISCOGS_CANDIDATES
-        if normalized in candidate["catalogNumber"].lower()
-        or candidate["catalogNumber"].lower().split(" ")[0] in normalized
-    ]
-    if partial:
-        return partial
-
-    return []
-
-
-def heuristic_lp_recognition(file_size: int, media_type: str, filename: str | None, content_type: str | None):
-    normalized_name = (filename or "").lower()
-    normalized_type = (content_type or "").lower()
-    has_media = file_size > 120
-    negative_hint = any(token in normalized_name for token in ["not-record", "book", "poster", "cd"])
-    type_hint = normalized_type.startswith("image/") or normalized_type.startswith("video/")
-    record_hint = any(token in normalized_name for token in ["lp", "vinyl", "record", "disc", "album"])
-
-    confidence = 0
-    if has_media and type_hint:
-        confidence = 88 if media_type == "image" else 84
-    if record_hint:
-        confidence = min(97, confidence + 6)
-    if negative_hint:
-        confidence = 34
-
-    is_record = has_media and type_hint
-    signals = (
-        [
-            "업로드된 매체를 표면 상태 감정 자료로 접수했습니다.",
-            "스크래치 후보, 반사, 먼지 가능성을 감정서 참고 항목으로 기록합니다.",
-            "이 분석은 판매 차단이 아니라 상태 설명 보조 자료로 사용됩니다.",
-        ]
-        if is_record
-        else [
-            "표면 상태 분석에 사용할 매체가 충분하지 않습니다.",
-            "자켓 사진 또는 음반 표면 이미지/동영상을 추가하면 감정서 품질이 높아집니다.",
-        ]
-    )
-    return is_record, confidence, signals
-
-
-def risk_level(value: float, medium: float, high: float) -> str:
-    if value >= high:
-        return "high"
-    if value >= medium:
-        return "medium"
-    return "low"
-
-
-def stable_text_seed(value: str) -> int:
-    seed = 0
-    for char in value:
-        seed = ((seed * 31) + ord(char)) & 0xFFFFFFFF
-    return seed
-
-
-def grade_from_score(score: int) -> str:
-    if score >= 92:
-        return "NM"
-    if score >= 84:
-        return "VG+"
-    if score >= 72:
-        return "VG"
-    return "G"
-
-
-def normalize_json_list(value):
-    if isinstance(value, list):
-        return value
-    if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-            return decoded if isinstance(decoded, list) else []
-        except json.JSONDecodeError:
-            return []
-    return []
-
-
-def normalize_json_object(value):
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            decoded = json.loads(value)
-            return decoded if isinstance(decoded, dict) else {}
-        except json.JSONDecodeError:
-            return {}
-    return {}
-
-
-def playback_impact_from_risk(scratch_risk: str, reflection_risk: str) -> str:
-    if scratch_risk == "high":
-        return "높음"
-    if scratch_risk == "medium" or reflection_risk == "high":
-        return "주의"
-    return "낮음"
-
-
-def surface_condition_payload(
-    *,
-    confidence: int,
-    scratch_count: int = 0,
-    reflection_ratio: float = 0.0,
-    quality_penalty: int = 0,
-    source: str = "heuristic",
-):
-    scratch_risk = "high" if scratch_count >= 8 else "medium" if scratch_count >= 3 else "low"
-    reflection_risk = risk_level(reflection_ratio, 0.025, 0.07)
-    surface_score = max(45, min(92, 88 - scratch_count * 4 - round(reflection_ratio * 180) - quality_penalty))
-    if source != "opencv":
-        surface_score = max(58, min(84, confidence - 8))
-
-    note = (
-        "강한 반사가 있어 먼지나 얕은 흠집과 구분이 필요합니다."
-        if reflection_risk == "high"
-        else "일부 반사 가능성이 있어 실제 먼지와 표면 흠집을 함께 확인하세요."
-        if reflection_risk == "medium"
-        else "반사 영향은 낮아 보이며 스크래치 후보 중심으로 확인했습니다."
-    )
-    return {
-        "surfaceScore": surface_score,
-        "scratchCount": scratch_count,
-        "scratchRisk": scratch_risk,
-        "reflectionRisk": reflection_risk,
-        "scratchRegions": [],
-        "dustOrReflectionNote": note,
-        "playbackImpact": playback_impact_from_risk(scratch_risk, reflection_risk),
-    }
-
-
-def heuristic_surface_condition_payload(
-    *,
-    file_size: int,
-    media_type: str,
-    filename: str | None,
-    content_type: str | None,
-    confidence: int,
-):
-    normalized = f"{filename or ''}|{content_type or ''}|{file_size}|{media_type}".lower()
-    seed = stable_text_seed(normalized)
-    size_bucket = min(10, file_size // 700_000)
-    scratch_count = int(seed % 7) + (2 if media_type == "video" and file_size < 2_000_000 else 0)
-    reflection_ratio = ((seed >> 5) % 9) / 100.0
-    quality_penalty = int((seed >> 12) % 8)
-    if media_type == "video":
-        quality_penalty += 2
-    condition = surface_condition_payload(
-        confidence=confidence,
-        scratch_count=scratch_count,
-        reflection_ratio=reflection_ratio,
-        quality_penalty=quality_penalty + max(0, 6 - size_bucket),
-        source="opencv",
-    )
-    condition["surfaceScore"] = max(45, min(86, condition["surfaceScore"]))
-    condition["playbackImpact"] = playback_impact_from_risk(condition["scratchRisk"], condition["reflectionRisk"])
-    return condition
-
-
-def normalize_visual_condition_result(is_record: bool, confidence: int, signals: list[str]):
-    normalized_signals = [signal for signal in signals if signal]
-    if not normalized_signals:
-        normalized_signals = ["표면 상태 감정 자료로 접수했습니다."]
-
-    normalized_signals = [
-        signal.replace("판매 등록을 진행할 수 없습니다", "감정서 참고 자료로 기록합니다")
-        .replace("판매 불가", "추가 확인 권장")
-        .replace("차단", "참고")
-        for signal in normalized_signals
-    ]
-
-    if not any("스크래치" in signal for signal in normalized_signals):
-        normalized_signals.append("긴 선형 스크래치 후보와 얕은 표면 흠집을 함께 확인했습니다.")
-    normalized_signals.append("촬영 각도나 조명 반사는 먼지/반사 가능성으로 분리해 해석해야 합니다.")
-
-    normalized_confidence = max(45, min(92, confidence))
-    return True, normalized_confidence, normalized_signals[:5]
-
-
-def opencv_lp_recognition(content: bytes, content_type: str | None):
-    normalized_type = (content_type or "").lower()
-    if not normalized_type.startswith("image/"):
-        return None
-
-    image_array = np.frombuffer(content, dtype=np.uint8)
-    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-    if image is None:
-        return None
-
-    height, width = image.shape[:2]
-    if height < 120 or width < 120:
-        return False, 25, ["이미지 해상도가 낮아 LP 표면과 스크래치를 안정적으로 확인하기 어렵습니다."]
-
-    max_side = 900
-    scale = min(1.0, max_side / max(height, width))
-    if scale < 1.0:
-        image = cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
-        height, width = image.shape[:2]
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.medianBlur(gray, 5)
-    min_radius = int(min(width, height) * 0.18)
-    max_radius = int(min(width, height) * 0.49)
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(80, min(width, height) // 3),
-        param1=90,
-        param2=28,
-        minRadius=min_radius,
-        maxRadius=max_radius,
-    )
-
-    disc_circle = None
-    label_circle = None
-    if circles is not None:
-        candidates = np.round(circles[0]).astype(int).tolist()
-        candidates.sort(key=lambda item: item[2], reverse=True)
-        disc_circle = candidates[0]
-        for candidate in sorted(candidates, key=lambda item: item[2]):
-            cx, cy, radius = candidate
-            if disc_circle and radius < disc_circle[2] * 0.45:
-                distance = ((cx - disc_circle[0]) ** 2 + (cy - disc_circle[1]) ** 2) ** 0.5
-                if distance < disc_circle[2] * 0.2:
-                    label_circle = candidate
-                    break
-
-    edges = cv2.Canny(gray, 60, 150)
-    line_segments = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=55,
-        minLineLength=max(35, min(width, height) // 9),
-        maxLineGap=8,
-    )
-
-    scratch_candidates = 0
-    scratch_regions: list[dict] = []
-    if line_segments is not None:
-        mask = np.ones((height, width), dtype=np.uint8) * 255
-        if disc_circle:
-            cx, cy, radius = disc_circle
-            mask[:] = 0
-            cv2.circle(mask, (cx, cy), max(1, radius - 8), 255, -1)
-            cv2.circle(mask, (cx, cy), max(1, int(radius * 0.22)), 0, -1)
-        for segment in line_segments[:, 0]:
-            x1, y1, x2, y2 = segment
-            length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-            if length < min(width, height) * 0.11:
+async def load_chat_messages(chat_id: str) -> list[dict[str, Any]]:
+    chats = read_json(CHATS_PATH, {})
+    room = chats.get(chat_id, [])
+    messages = [normalize_chat_message(chat_id, item) for item in room] if isinstance(room, list) else []
+    participants = participant_ids_from_chat_id(chat_id)
+    if CHAT_SEPARATOR in chat_id and len(participants) == 2:
+        listing_id = listing_id_from_chat_id(chat_id)
+        for legacy_chat_id, legacy_room in chats.items():
+            if str(legacy_chat_id) == chat_id or not isinstance(legacy_room, list):
                 continue
-            if mask[y1, x1] == 0 or mask[y2, x2] == 0:
-                continue
-            if disc_circle:
-                cx, cy, _ = disc_circle
-                mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-                radial_angle = np.degrees(np.arctan2(my - cy, mx - cx))
-                line_angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-                angle_delta = abs(((line_angle - radial_angle + 90) % 180) - 90)
-                if angle_delta < 12:
+            for item in legacy_room:
+                message = normalize_chat_message(str(legacy_chat_id), item)
+                if (message["listingId"] or listing_id_from_chat_id(str(legacy_chat_id))) != listing_id:
                     continue
-            scratch_candidates += 1
-
-    disc_score = 0
-    signals: list[str] = []
-    if disc_circle:
-        _, _, radius = disc_circle
-        coverage = radius / (min(width, height) / 2)
-        disc_score += 48
-        if coverage > 0.58:
-            disc_score += 18
-        signals.append("원형 음반 윤곽이 감지되었습니다.")
-    else:
-        signals.append("뚜렷한 원형 LP 윤곽은 감지되지 않았습니다.")
-
-    if label_circle:
-        disc_score += 18
-        signals.append("중앙 라벨 후보가 감지되었습니다.")
-    elif disc_circle:
-        disc_score += 6
-        signals.append("중앙 라벨은 약하게 보이거나 반사 때문에 불분명합니다.")
-
-    if scratch_candidates >= 6:
-        signals.append(f"표면에서 긴 선형 스크래치 후보가 {scratch_candidates}개 감지되었습니다.")
-    elif scratch_candidates >= 2:
-        signals.append(f"표면에서 약한 스크래치 후보가 {scratch_candidates}개 감지되었습니다.")
-    else:
-        signals.append("눈에 띄는 긴 스크래치 후보는 많지 않습니다.")
-
-    confidence = max(20, min(96, disc_score + min(12, scratch_candidates)))
-    is_record = bool(disc_circle and confidence >= 58)
-    if not is_record:
-        confidence = min(confidence, 55)
-
-    return is_record, confidence, signals
+                pair = sorted([chat_part(message["senderId"]), chat_part(message["recipientId"])])
+                if pair == sorted(participants):
+                    message["chatId"] = chat_id
+                    messages.append(message)
+    unique = {message["id"]: message for message in messages}
+    return sorted(unique.values(), key=lambda message: message["timestamp"])
 
 
-def opencv_lp_recognition(content: bytes, content_type: str | None):
-    normalized_type = (content_type or "").lower()
-    if not normalized_type.startswith("image/"):
+async def save_chat_message(chat_id: str, payload: ChatMessageCreate) -> dict[str, Any]:
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="메시지를 입력해 주세요.")
+    message = normalize_chat_message(
+        chat_id,
+        {
+            "id": f"msg-{uuid4().hex[:12]}",
+            "senderId": payload.sender_id,
+            "senderName": payload.sender_name,
+            "recipientId": payload.recipient_id or "",
+            "recipientName": payload.recipient_name or "",
+            "listingId": payload.listing_id or chat_id,
+            "message": content,
+            "type": payload.message_type,
+            "timestamp": now_iso(),
+        },
+    )
+    chats = read_json(CHATS_PATH, {})
+    room = chats.setdefault(chat_id, [])
+    if not isinstance(room, list):
+        room = []
+        chats[chat_id] = room
+    room.append(message)
+    chats[chat_id] = room[-300:]
+    write_json(CHATS_PATH, chats)
+    return message
+
+
+@app.get("/chats/{chat_id}/messages")
+async def get_chat_messages(chat_id: str):
+    return {"chatId": chat_id, "persisted": True, "messages": await load_chat_messages(chat_id)}
+
+
+@app.post("/chats/{chat_id}/messages")
+async def post_chat_message(chat_id: str, payload: ChatMessageCreate):
+    chat_id = canonical_chat_id(chat_id, payload)
+    message = await save_chat_message(chat_id, payload)
+    event = {"type": "message", "chatId": chat_id, "message": message}
+    await chat_manager.broadcast(chat_id, event)
+    return event
+
+
+@app.websocket("/ws/chats/{chat_id}")
+async def chat_websocket(websocket: WebSocket, chat_id: str):
+    user_id = websocket.query_params.get("user_id") or ""
+    recipient_id = websocket.query_params.get("recipient_id") or ""
+    listing_id = websocket.query_params.get("listing_id") or listing_id_from_chat_id(chat_id)
+    if CHAT_SEPARATOR not in chat_id and user_id and recipient_id:
+        chat_id = make_one_to_one_chat_id(listing_id, user_id, recipient_id)
+    await chat_manager.connect(chat_id, websocket)
+    try:
+        await websocket.send_json({"type": "history", "chatId": chat_id, "messages": await load_chat_messages(chat_id)})
+        while True:
+            payload = await websocket.receive_json()
+            if payload.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "chatId": chat_id})
+                continue
+            message = await save_chat_message(
+                chat_id,
+                ChatMessageCreate(
+                    sender_id=str(payload.get("senderId") or payload.get("sender_id") or "buyer1"),
+                    sender_name=str(payload.get("senderName") or payload.get("sender_name") or "사용자"),
+                    recipient_id=str(payload.get("recipientId") or payload.get("recipient_id") or ""),
+                    recipient_name=str(payload.get("recipientName") or payload.get("recipient_name") or ""),
+                    listing_id=str(payload.get("listingId") or payload.get("listing_id") or chat_id),
+                    content=str(payload.get("message") or payload.get("content") or ""),
+                    message_type=str(payload.get("messageType") or payload.get("message_type") or "text"),
+                ),
+            )
+            await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        chat_manager.disconnect(chat_id, websocket)
+
+
+@app.get("/listings")
+async def list_listings(q: str | None = None):
+    listings = all_albums()
+    if not q:
+        return listings
+    normalized = q.lower()
+    return [item for item in listings if normalized in item["title"].lower() or normalized in item["artist"].lower()]
+
+
+@app.post("/listings")
+async def create_listing(payload: ListingCreate):
+    listing = payload.model_dump()
+    listing["id"] = f"listing-{uuid4().hex[:10]}"
+    listing["seller_id"] = payload.user_id or "seller1"
+    listing["created_at"] = now_iso()
+    listing["views"] = 0
+    listings = read_json(LISTINGS_PATH, [])
+    listings.insert(0, listing)
+    write_json(LISTINGS_PATH, listings)
+    return {"status": "ok", "persisted": True, "listing": listing_to_album(listing)}
+
+
+@app.put("/listings/{listing_id}")
+async def update_listing(listing_id: str, payload: ListingCreate, user_id: str | None = None):
+    listings = read_json(LISTINGS_PATH, [])
+    updated: dict[str, Any] | None = None
+    for listing in listings:
+        if str(listing.get("id")) == listing_id:
+            seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
+            if user_id and seller_id and seller_id != user_id:
+                raise HTTPException(status_code=403, detail="판매글을 수정할 권한이 없습니다.")
+            listing.update(payload.model_dump())
+            listing["id"] = listing_id
+            listing["seller_id"] = seller_id or payload.user_id or "seller1"
+            listing["updated_at"] = now_iso()
+            updated = listing
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    write_json(LISTINGS_PATH, listings)
+    return {"status": "ok", "persisted": True, "listing": listing_to_album(updated)}
+
+
+@app.delete("/listings/{listing_id}")
+async def hide_listing(listing_id: str, user_id: str | None = None):
+    listings = read_json(LISTINGS_PATH, [])
+    updated: dict[str, Any] | None = None
+    for listing in listings:
+        if str(listing.get("id")) == listing_id:
+            if user_id and str(listing.get("seller_id") or listing.get("user_id")) != user_id:
+                raise HTTPException(status_code=403, detail="판매글을 내릴 권한이 없습니다.")
+            listing["status"] = "hidden"
+            listing["hidden_at"] = now_iso()
+            updated = listing
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    write_json(LISTINGS_PATH, listings)
+    return {"status": "hidden", "listingId": listing_id}
+
+
+def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
+    listing_id = str(payload.get("listingId") or payload.get("listing_id") or "")
+    album = find_album(listing_id)
+    buyer_id = str(payload.get("buyerId") or payload.get("buyer_id") or "guest")
+    seller_id = str(payload.get("sellerId") or payload.get("seller_id") or "")
+    return {
+        "id": str(payload.get("id") or f"offer-{uuid4().hex[:10]}"),
+        "listingId": listing_id,
+        "album": album,
+        "buyerId": buyer_id,
+        "buyerName": str(payload.get("buyerName") or payload.get("buyer_name") or "게스트"),
+        "sellerId": seller_id,
+        "sellerName": str(payload.get("sellerName") or payload.get("seller_name") or ""),
+        "offerPrice": int(payload.get("offerPrice") or payload.get("offer_price") or 0),
+        "timestamp": str(payload.get("timestamp") or payload.get("created_at") or now_iso()),
+        "status": str(payload.get("status") or "pending"),
+        "chatId": str(payload.get("chatId") or payload.get("chat_id") or make_one_to_one_chat_id(listing_id, buyer_id, seller_id)),
+    }
+
+
+@app.post("/offers")
+async def create_offer(payload: OfferCreate):
+    album = find_album(payload.listingId)
+    if not album:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    if payload.offerPrice <= 0:
+        raise HTTPException(status_code=400, detail="제안 금액을 확인해 주세요.")
+
+    seller_id = str(album["seller"]["id"])
+    offer = normalize_offer(
+        {
+            "id": f"offer-{uuid4().hex[:10]}",
+            "listingId": payload.listingId,
+            "buyerId": payload.buyerId,
+            "buyerName": payload.buyerName,
+            "sellerId": seller_id,
+            "sellerName": album["seller"]["name"],
+            "offerPrice": payload.offerPrice,
+            "timestamp": now_iso(),
+            "status": "pending",
+        }
+    )
+    offers = read_json(OFFERS_PATH, [])
+    offers.insert(0, {key: value for key, value in offer.items() if key != "album"})
+    write_json(OFFERS_PATH, offers)
+    chat_id = offer["chatId"]
+    message = await save_chat_message(
+        chat_id,
+        ChatMessageCreate(
+            sender_id=offer["buyerId"],
+            sender_name=offer["buyerName"],
+            recipient_id=offer["sellerId"],
+            recipient_name=offer["sellerName"],
+            listing_id=payload.listingId,
+            content=f"가격 제안 {offer['offerPrice']:,}원을 보냈습니다.",
+            message_type="offer",
+        ),
+    )
+    await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
+    return {"status": "ok", "persisted": True, "offer": offer}
+
+
+@app.get("/users/{user_id}/offers/received")
+async def get_received_offers(user_id: str):
+    offers = [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]
+    return {"offers": [offer for offer in offers if offer["sellerId"] == user_id and offer["album"] is not None]}
+
+
+@app.patch("/offers/{offer_id}")
+async def update_offer_status(offer_id: str, payload: OfferStatusUpdate):
+    status = payload.status if payload.status in {"pending", "accepted", "rejected"} else ""
+    if not status:
+        raise HTTPException(status_code=400, detail="상태값을 확인해 주세요.")
+    offers = read_json(OFFERS_PATH, [])
+    updated: dict[str, Any] | None = None
+    for offer in offers:
+        if str(offer.get("id")) == offer_id:
+            offer["status"] = status
+            offer["updatedAt"] = now_iso()
+            updated = normalize_offer(offer)
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="가격 제안을 찾을 수 없습니다.")
+    write_json(OFFERS_PATH, offers)
+    chat_id = updated["chatId"]
+    message = await save_chat_message(
+        chat_id,
+        ChatMessageCreate(
+            sender_id=updated["sellerId"],
+            sender_name=updated["sellerName"] or "판매자",
+            recipient_id=updated["buyerId"],
+            recipient_name=updated["buyerName"],
+            listing_id=updated["listingId"],
+            content="가격 제안을 수락했습니다." if status == "accepted" else "가격 제안을 거절했습니다.",
+            message_type="offer",
+        ),
+    )
+    await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
+    return {"status": "ok", "offer": updated}
+
+
+@app.get("/users/{user_id}/chat-requests")
+async def get_user_chat_requests(user_id: str):
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    chats = read_json(CHATS_PATH, {})
+    if isinstance(chats, dict):
+        for chat_id, room in chats.items():
+            if not isinstance(room, list) or not room:
+                continue
+            normalized = [normalize_chat_message(str(chat_id), item) for item in room]
+            for message in normalized:
+                if message["senderId"] != user_id and message["recipientId"] != user_id:
+                    continue
+                participant_id = message["recipientId"] if message["senderId"] == user_id else message["senderId"]
+                if not participant_id:
+                    continue
+                listing_id = message["listingId"] or listing_id_from_chat_id(str(chat_id))
+                canonical_id = make_one_to_one_chat_id(listing_id, user_id, participant_id)
+                grouped.setdefault(canonical_id, []).append(message)
+
+    requests: list[dict[str, Any]] = []
+    for canonical_id, visible in grouped.items():
+        visible.sort(key=lambda message: message["timestamp"])
+        last = visible[-1]
+        if last["senderId"] == user_id:
+            participant_id = last["recipientId"]
+            participant_name = last["recipientName"]
+        else:
+            participant_id = last["senderId"]
+            participant_name = last["senderName"]
+        listing_id = last["listingId"] or listing_id_from_chat_id(canonical_id)
+        if participant_id:
+            album = find_album(listing_id)
+            requests.append({
+                "id": canonical_id,
+                "chatId": canonical_id,
+                "listingId": listing_id,
+                "album": album,
+                "participantId": participant_id,
+                "participantName": participant_name or participant_id or "사용자",
+                "lastMessage": last["message"],
+                "lastMessageType": last["type"],
+                "timestamp": last["timestamp"],
+                "isUnread": last["recipientId"] == user_id and last["senderId"] != user_id,
+            })
+    requests.sort(key=lambda item: item["timestamp"], reverse=True)
+    return {"requests": requests[:50]}
+
+
+@app.get("/users/{user_id}/notifications")
+async def get_user_notifications(user_id: str):
+    notifications: list[dict[str, Any]] = []
+    for offer in [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]:
+        if offer["sellerId"] == user_id:
+            notifications.append({
+                "id": f"offer-{offer['id']}",
+                "type": "offer",
+                "title": "새 가격 제안",
+                "message": f"{offer['buyerName']}님이 {offer['album']['title'] if offer['album'] else '판매글'}에 {offer['offerPrice']:,}원을 제안했습니다.",
+                "timestamp": offer["timestamp"],
+                "isRead": False,
+                "link": "/transaction/offers/received",
+            })
+    chats = read_json(CHATS_PATH, {})
+    if isinstance(chats, dict):
+        for chat_id, room in chats.items():
+            if not isinstance(room, list):
+                continue
+            for raw in reversed(room):
+                message = normalize_chat_message(str(chat_id), raw)
+                if message["recipientId"] == user_id and message["senderId"] != user_id:
+                    notifications.append({
+                        "id": f"chat-{message['id']}",
+                        "type": "chat",
+                        "title": "새 채팅",
+                        "message": f"{message['senderName']}: {message['message']}",
+                        "timestamp": message["timestamp"],
+                        "isRead": False,
+                        "link": f"/transaction/chat/{chat_id}?listingId={message['listingId'] or listing_id_from_chat_id(str(chat_id))}&recipientId={message['senderId']}&recipientName={message['senderName']}",
+                    })
+                    break
+    notifications.sort(key=lambda item: item["timestamp"], reverse=True)
+    return {"notifications": notifications[:50]}
+
+
+@app.get("/listings/{listing_id}/comments")
+async def list_comments(listing_id: str):
+    comments = read_json(COMMENTS_PATH, [])
+    return [
+        {
+            "id": str(comment.get("id")),
+            "listingId": str(comment.get("listingId") or comment.get("listing_id") or listing_id),
+            "userId": str(comment.get("userId") or comment.get("user_id") or "guest"),
+            "userName": str(comment.get("userName") or comment.get("user_name") or "게스트"),
+            "role": str(comment.get("role") or "buyer"),
+            "content": str(comment.get("content") or ""),
+            "timestamp": str(comment.get("timestamp") or comment.get("created_at") or now_iso()),
+            "parentId": comment.get("parentId") or comment.get("parent_id"),
+        }
+        for comment in comments
+        if str(comment.get("listingId") or comment.get("listing_id")) == listing_id
+    ]
+
+
+@app.post("/listings/{listing_id}/comments")
+async def create_comment(listing_id: str, payload: CommentCreate):
+    content = payload.content.strip()
+    role = payload.role if payload.role in {"buyer", "seller"} else "buyer"
+    if not content:
+        raise HTTPException(status_code=400, detail="댓글 내용을 입력해 주세요.")
+
+    comments = read_json(COMMENTS_PATH, [])
+    comment = {
+        "id": f"comment-{uuid4().hex[:10]}",
+        "listingId": listing_id,
+        "userId": payload.userId or "guest",
+        "userName": payload.userName or "게스트",
+        "role": role,
+        "content": content,
+        "timestamp": now_iso(),
+        "parentId": payload.parentId,
+    }
+    comments.insert(0, comment)
+    write_json(COMMENTS_PATH, comments)
+    return {"status": "ok", "persisted": True, "comment": comment}
+
+
+def surface_condition_from_image(content: bytes, content_type: str | None) -> dict[str, Any] | None:
+    if not (content_type or "").lower().startswith("image/"):
         return None
-
-    image_array = np.frombuffer(content, dtype=np.uint8)
-    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         return None
-
     height, width = image.shape[:2]
-    if height < 120 or width < 120:
-        return False, 25, ["이미지 해상도가 낮아 LP 표면을 안정적으로 확인하기 어렵습니다."]
-
-    max_side = 900
-    scale = min(1.0, max_side / max(height, width))
+    if min(height, width) < 120:
+        return None
+    scale = min(1.0, 900 / max(height, width))
     if scale < 1.0:
         image = cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
         height, width = image.shape[:2]
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    blurred = cv2.medianBlur(gray, 5)
-    min_side = min(width, height)
+    min_side = min(height, width)
     blur_variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    mean_value = float(np.mean(hsv[:, :, 2]))
-    exposure_penalty = 0
-    if mean_value < 45 or mean_value > 215:
-        exposure_penalty = 8
-    elif mean_value < 65 or mean_value > 195:
-        exposure_penalty = 4
-    blur_penalty = 10 if blur_variance < 45 else 5 if blur_variance < 90 else 0
-    quality_penalty = exposure_penalty + blur_penalty
+    exposure = float(np.mean(hsv[:, :, 2]))
+    reflection_mask = cv2.inRange(hsv, np.array([0, 0, 218]), np.array([179, 70, 255]))
+    reflection_ratio = float(np.count_nonzero(reflection_mask)) / float(height * width)
 
+    blurred = cv2.medianBlur(gray, 5)
     circles = cv2.HoughCircles(
         blurred,
         cv2.HOUGH_GRADIENT,
@@ -865,1383 +1512,769 @@ def opencv_lp_recognition(content: bytes, content_type: str | None):
         minRadius=int(min_side * 0.14),
         maxRadius=int(min_side * 0.52),
     )
-
     disc_circle = None
-    label_circle = None
     if circles is not None:
         candidates = np.round(circles[0]).astype(int).tolist()
         candidates.sort(key=lambda item: item[2], reverse=True)
         disc_circle = candidates[0]
-        for candidate in sorted(candidates, key=lambda item: item[2]):
-            cx, cy, radius = candidate
-            if radius < disc_circle[2] * 0.45:
-                distance = ((cx - disc_circle[0]) ** 2 + (cy - disc_circle[1]) ** 2) ** 0.5
-                if distance < disc_circle[2] * 0.25:
-                    label_circle = candidate
-                    break
 
-    dark_mask = cv2.inRange(gray, 0, 110)
-    reflection_mask = cv2.inRange(hsv, np.array([0, 0, 215]), np.array([179, 55, 255]))
-    reflection_ratio = float(np.count_nonzero(reflection_mask)) / float(width * height)
-    kernel = np.ones((7, 7), np.uint8)
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel)
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel)
-    dark_ratio = float(np.count_nonzero(dark_mask)) / float(width * height)
-    contour_disc_hint = False
+    reflection_mask = cv2.dilate(reflection_mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
+    analysis_mask = np.ones((height, width), dtype=np.uint8) * 255
+    if disc_circle:
+        cx, cy, radius = disc_circle
+        analysis_mask[:] = 0
+        cv2.circle(analysis_mask, (cx, cy), max(1, radius - 10), 255, -1)
+        cv2.circle(analysis_mask, (cx, cy), max(1, int(radius * 0.24)), 0, -1)
+    analysis_mask = cv2.bitwise_and(analysis_mask, cv2.bitwise_not(reflection_mask))
 
-    if disc_circle is None:
-        contours, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours:
-            largest = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest)
-            perimeter = cv2.arcLength(largest, True)
-            if perimeter > 0:
-                circularity = 4 * np.pi * area / (perimeter * perimeter)
-                (cx, cy), radius = cv2.minEnclosingCircle(largest)
-                center_distance = ((cx - width / 2) ** 2 + (cy - height / 2) ** 2) ** 0.5
-                if area > width * height * 0.10 and radius > min_side * 0.15 and circularity > 0.38:
-                    disc_circle = [int(cx), int(cy), int(radius)]
-                    contour_disc_hint = center_distance < min_side * 0.40
-
-    center_size = max(30, int(min_side * 0.18))
-    center_crop = image[
-        max(0, height // 2 - center_size): min(height, height // 2 + center_size),
-        max(0, width // 2 - center_size): min(width, width // 2 + center_size),
-    ]
-    label_color_hint = False
-    if center_crop.size:
-        hsv_center = cv2.cvtColor(center_crop, cv2.COLOR_BGR2HSV)
-        label_color_hint = float(np.mean(hsv_center[:, :, 1])) > 32 and float(np.mean(hsv_center[:, :, 2])) > 50
-
-    edges = cv2.Canny(gray, 55, 145)
-    line_segments = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=48,
-        minLineLength=max(32, min_side // 10),
-        maxLineGap=8,
-    )
-
-    scratch_candidates = 0
-    scratch_regions: list[dict] = []
-    if line_segments is not None:
-        mask = np.ones((height, width), dtype=np.uint8) * 255
-        if disc_circle:
-            cx, cy, radius = disc_circle
-            mask[:] = 0
-            cv2.circle(mask, (cx, cy), max(1, radius - 8), 255, -1)
-            cv2.circle(mask, (cx, cy), max(1, int(radius * 0.22)), 0, -1)
-        for x1, y1, x2, y2 in line_segments[:, 0]:
-            length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+    equalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    edges = cv2.Canny(equalized, 45, 125)
+    edges = cv2.bitwise_and(edges, edges, mask=analysis_mask)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=42, minLineLength=max(38, min_side // 9), maxLineGap=7)
+    scratch_count = 0
+    scratch_regions: list[dict[str, Any]] = []
+    if lines is not None:
+        accepted: list[tuple[float, int, int, int, int]] = []
+        for x1, y1, x2, y2 in lines[:, 0]:
+            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
             if length < min_side * 0.10:
                 continue
-            if mask[y1, x1] == 0 or mask[y2, x2] == 0:
+            if analysis_mask[y1, x1] == 0 or analysis_mask[y2, x2] == 0:
                 continue
-            scratch_candidates += 1
-            if len(scratch_regions) < 16:
-                scratch_regions.append({
-                    "x1": round(float(x1) / width, 4),
-                    "y1": round(float(y1) / height, 4),
-                    "x2": round(float(x2) / width, 4),
-                    "y2": round(float(y2) / height, 4),
-                    "severity": "high" if length >= min_side * 0.32 else "medium" if length >= min_side * 0.18 else "low",
-                })
+            if disc_circle:
+                cx, cy, _radius = disc_circle
+                mx = (x1 + x2) / 2.0
+                my = (y1 + y2) / 2.0
+                radial_angle = np.arctan2(my - cy, mx - cx)
+                line_angle = np.arctan2(y2 - y1, x2 - x1)
+                tangent_delta = abs(((line_angle - radial_angle - np.pi / 2 + np.pi) % np.pi) - np.pi / 2)
+                if tangent_delta < 0.18 and length < min_side * 0.22:
+                    continue
+            if any(abs(x1 - ax1) + abs(y1 - ay1) + abs(x2 - ax2) + abs(y2 - ay2) < min_side * 0.18 for _alen, ax1, ay1, ax2, ay2 in accepted):
+                continue
+            accepted.append((length, int(x1), int(y1), int(x2), int(y2)))
+        accepted.sort(reverse=True)
+        scratch_count = len(accepted)
+        for length, x1, y1, x2, y2 in accepted[:14]:
+            scratch_regions.append(
+                {
+                    "x1": round(x1 / width, 4),
+                    "y1": round(y1 / height, 4),
+                    "x2": round(x2 / width, 4),
+                    "y2": round(y2 / height, 4),
+                    "severity": "high" if length >= min_side * 0.34 else "medium" if length >= min_side * 0.20 else "low",
+                }
+            )
 
-    score = 0
-    signals: list[str] = []
-    if disc_circle:
-        _, _, radius = disc_circle
-        coverage = radius / (min_side / 2)
-        score += 46
-        if coverage > 0.52:
-            score += 16
-        signals.append("어두운 원반형 영역이 LP 표면 후보로 감지되었습니다." if contour_disc_hint else "원형 음반 윤곽이 감지되었습니다.")
-    else:
-        signals.append("뚜렷한 원형 윤곽은 약하지만 사진 내 LP 후보 신호를 함께 확인했습니다.")
+    scratch_risk = "high" if scratch_count >= 9 else "medium" if scratch_count >= 3 else "low"
+    reflection_risk = risk_label(reflection_ratio, 0.025, 0.07)
+    quality_penalty = 0
+    if blur_variance < 45:
+        quality_penalty += 10
+    elif blur_variance < 90:
+        quality_penalty += 5
+    if exposure < 45 or exposure > 215:
+        quality_penalty += 8
+    elif exposure < 65 or exposure > 195:
+        quality_penalty += 4
 
-    if label_circle or label_color_hint:
-        score += 18
-        signals.append("중앙 라벨 또는 컬러 라벨 후보가 감지되었습니다.")
-    elif disc_circle:
-        score += 6
-        signals.append("중앙 라벨은 약하게 보이거나 반사 때문에 불분명합니다.")
-
-    if dark_ratio > 0.20:
-        score += 12
-        signals.append("LP 표면으로 볼 수 있는 어두운 영역 비율이 충분합니다.")
-
-    if scratch_candidates >= 6:
-        signals.append(f"표면에서 긴 선형 스크래치 후보가 {scratch_candidates}개 감지되었습니다.")
-    elif scratch_candidates >= 2:
-        signals.append(f"표면에서 약한 스크래치 후보가 {scratch_candidates}개 감지되었습니다.")
-    else:
-        signals.append("눈에 띄는 긴 스크래치 후보는 많지 않습니다.")
-
-    confidence = max(20, min(96, score + min(10, scratch_candidates)))
-    is_record = bool((disc_circle and confidence >= 50) or (dark_ratio > 0.26 and label_color_hint and confidence >= 46))
-    if not is_record:
-        confidence = min(confidence, 55)
-
-    condition = surface_condition_payload(
-        confidence=confidence,
-        scratch_count=scratch_candidates,
-        reflection_ratio=reflection_ratio,
-        quality_penalty=quality_penalty,
-        source="opencv",
-    )
-    condition["scratchRegions"] = scratch_regions
-    if blur_penalty:
-        signals.append("초점이 다소 약해 얕은 스크래치 후보는 보수적으로 해석했습니다.")
-    if exposure_penalty:
-        signals.append("노출이 강하거나 어두워 반사/먼지 구분 정확도가 낮아질 수 있습니다.")
-    if condition["reflectionRisk"] != "low":
-        signals.append(condition["dustOrReflectionNote"])
-
+    surface_score = 88 - min(30, scratch_count * 3.2) - min(14, reflection_ratio * 180) - quality_penalty
+    surface_score = int(max(42, min(90, round(surface_score))))
+    confidence = int(max(45, min(92, surface_score + (4 if disc_circle else -6))))
+    signals = [
+        "LP 여부로 감정을 막지 않고, 판매 설명에 쓸 표면 상태를 계산했습니다.",
+        f"스크래치 후보 {scratch_count}개, 반사 위험 {reflection_risk}로 집계했습니다.",
+    ]
+    if quality_penalty:
+        signals.append("초점 흐림 또는 노출 문제가 있어 표면 점수를 보수적으로 낮췄습니다.")
+    if scratch_regions:
+        signals.append("표시된 스크래치 위치는 후보 영역이며 실제 먼지/반사와 함께 확인해야 합니다.")
+    severity_counts = {
+        "high": sum(1 for region in scratch_regions if region.get("severity") == "high"),
+        "medium": sum(1 for region in scratch_regions if region.get("severity") == "medium"),
+        "low": sum(1 for region in scratch_regions if region.get("severity") == "low"),
+    }
     return {
-        "is_record": is_record,
+        "isRecord": True,
         "confidence": confidence,
         "signals": signals,
-        **condition,
-    }
-
-
-def opencv_video_surface_recognition(content: bytes, content_type: str | None):
-    normalized_type = (content_type or "").lower()
-    if not normalized_type.startswith("video/"):
-        return None
-
-    suffix = ".mp4"
-    if "webm" in normalized_type:
-        suffix = ".webm"
-    elif "quicktime" in normalized_type or "mov" in normalized_type:
-        suffix = ".mov"
-
-    temp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(content)
-            temp_path = temp_file.name
-
-        capture = cv2.VideoCapture(temp_path)
-        if not capture.isOpened():
-            return None
-
-        frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        if frame_count <= 0:
-            sample_indices = [0, 8, 16, 24, 32]
-        else:
-            sample_indices = sorted(set(int(frame_count * ratio) for ratio in [0.12, 0.28, 0.44, 0.60, 0.76, 0.90]))
-
-        frame_results: list[dict] = []
-        for frame_index in sample_indices[:8]:
-            if frame_count > 0:
-                capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
-            ok, frame = capture.read()
-            if not ok or frame is None:
-                continue
-            ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 86])
-            if not ok:
-                continue
-            result = opencv_lp_recognition(encoded.tobytes(), "image/jpeg")
-            if isinstance(result, dict):
-                frame_results.append(result)
-        capture.release()
-
-        if not frame_results:
-            return None
-
-        surface_scores = [int(result["surfaceScore"]) for result in frame_results]
-        scratch_counts = [int(result["scratchCount"]) for result in frame_results]
-        confidence_values = [int(result["confidence"]) for result in frame_results]
-        representative_regions = max(
-            (list(result.get("scratchRegions", [])) for result in frame_results),
-            key=len,
-            default=[],
-        )[:16]
-        reflection_weights = {"low": 0, "medium": 1, "high": 2}
-        reflection_score = max(reflection_weights.get(str(result["reflectionRisk"]), 0) for result in frame_results)
-        reflection_risk = "high" if reflection_score >= 2 else "medium" if reflection_score == 1 else "low"
-        scratch_count = int(round(float(np.percentile(scratch_counts, 70))))
-        scratch_risk = "high" if scratch_count >= 8 else "medium" if scratch_count >= 3 else "low"
-        surface_score = int(round(float(np.percentile(surface_scores, 35))))
-        confidence = min(int(round(float(np.mean(confidence_values)))), surface_score + 3)
-        signals = [
-            f"동영상 프레임 {len(frame_results)}개를 샘플링해 표면 상태를 비교했습니다.",
-            f"프레임별 표면 점수 범위는 {min(surface_scores)}~{max(surface_scores)}점입니다.",
-            f"스크래치 후보는 대표값 {scratch_count}개로 집계했습니다.",
-        ]
-        for result in frame_results[:2]:
-            for signal in result.get("signals", [])[:1]:
-                signals.append(str(signal))
-
-        return {
-            "is_record": any(bool(result["is_record"]) for result in frame_results),
-            "confidence": confidence,
-            "signals": signals[:5],
-            "surfaceScore": max(45, min(88, surface_score)),
-            "scratchCount": scratch_count,
-            "scratchRisk": scratch_risk,
-            "reflectionRisk": reflection_risk,
-            "scratchRegions": representative_regions,
-            "dustOrReflectionNote": (
-                "동영상 일부 프레임에서 강한 반사가 보여 먼지/스크래치 구분을 보수적으로 반영했습니다."
-                if reflection_risk == "high"
-                else "동영상 프레임 간 반사 변화와 스크래치 후보를 함께 반영했습니다."
-            ),
-            "playbackImpact": playback_impact_from_risk(scratch_risk, reflection_risk),
-        }
-    finally:
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
-
-def extract_response_text(payload: dict) -> str:
-    output_text = payload.get("output_text")
-    if isinstance(output_text, str):
-        return output_text
-
-    chunks: list[str] = []
-    for item in payload.get("output", []):
-        if item.get("type") != "message":
-            continue
-        for content in item.get("content", []):
-            if content.get("type") == "output_text" and isinstance(content.get("text"), str):
-                chunks.append(content["text"])
-    return "\n".join(chunks)
-
-
-def parse_ai_lp_recognition(text: str):
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.strip("`")
-        if cleaned.lower().startswith("json"):
-            cleaned = cleaned[4:].strip()
-
-    data = json.loads(cleaned)
-    is_record = bool(data.get("isRecord"))
-    confidence = int(data.get("confidence", 0))
-    confidence = max(0, min(100, confidence))
-    signals = data.get("signals")
-    if not isinstance(signals, list):
-        signals = []
-    normalized_signals = [str(item) for item in signals[:5] if str(item).strip()]
-    if not normalized_signals:
-        normalized_signals = ["AI가 이미지의 형태, 중앙 라벨, 원형 윤곽, 표면 질감을 기준으로 판정했습니다."]
-    return is_record, confidence, normalized_signals
-
-
-async def ai_lp_recognition(content: bytes, filename: str | None, content_type: str | None):
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    normalized_type = (content_type or "").lower()
-    if not normalized_type.startswith("image/"):
-        return None
-
-    model = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")
-    image_b64 = base64.b64encode(content).decode("ascii")
-    image_url = f"data:{content_type or 'image/jpeg'};base64,{image_b64}"
-    prompt = (
-        "You are Vinyl-Check's LP recognition engine. Analyze the uploaded image and decide "
-        "whether it clearly contains a vinyl LP record, record surface, record sleeve with visible LP, "
-        "or turntable record. Return only JSON with this exact shape: "
-        '{"isRecord": boolean, "confidence": integer, "signals": string[]}. '
-        "Use Korean for signals. Mention concrete visual evidence such as circular disc shape, center label, "
-        "grooves, sleeve context, glare/reflection, or reasons it is not an LP. "
-        "Set confidence from 0 to 100."
-    )
-
-    try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "input": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "input_text", "text": prompt},
-                                {"type": "input_image", "image_url": image_url, "detail": "low"},
-                            ],
-                        }
-                    ],
-                    "max_output_tokens": 300,
-                },
-            )
-            response.raise_for_status()
-        return parse_ai_lp_recognition(extract_response_text(response.json()))
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
-        logger.warning("OpenAI LP recognition failed; falling back to heuristic: %s", exc)
-        return None
-
-
-async def save_lp_recognition_analysis(
-    *,
-    media_type: str,
-    filename: str | None,
-    content_type: str | None,
-    file_size: int,
-    is_record: bool,
-    confidence: int,
-    signals: list[str],
-    source: str,
-):
-    if not db_pool:
-        return None
-
-    try:
-        async with db_pool.acquire() as connection:
-            return await connection.fetchval(
-                """
-                insert into lp_recognition_analyses (
-                  media_type, filename, content_type, file_size, is_record, confidence, signals, source
-                )
-                values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
-                returning id::text
-                """,
-                media_type,
-                filename,
-                content_type,
-                file_size,
-                is_record,
-                confidence,
-                json.dumps(signals, ensure_ascii=False),
-                source,
-            )
-    except asyncpg.PostgresError:
-        return None
-
-
-def discogs_result_to_candidate(result: dict, catalog_number: str):
-    title_text = result.get("title") or "Unknown release"
-    if " - " in title_text:
-        artist, title = title_text.split(" - ", 1)
-    else:
-        artist, title = "Unknown artist", title_text
-
-    label = "Unknown label"
-    if result.get("label"):
-        label = result["label"][0]
-
-    country = result.get("country") or "Unknown"
-    try:
-        year = int(result.get("year") or 0)
-    except (TypeError, ValueError):
-        year = 0
-    result_id = str(result.get("id") or result.get("resource_url") or title_text)
-
-    return {
-        "id": f"discogs-{result_id}",
-        "title": title,
-        "artist": artist,
-        "year": year,
-        "label": label,
-        "catalogNumber": result.get("catno") or catalog_number,
-        "country": country,
-        "confidence": 88,
-    }
-
-
-async def fetch_discogs_results(
-    client: httpx.AsyncClient,
-    query: str,
-    headers: dict[str, str],
-    album_title: str | None = None,
-    artist: str | None = None,
-):
-    title = (album_title or "").strip()
-    artist_name = (artist or "").strip()
-    combined_query = " ".join(part for part in [artist_name, title, query] if part).strip()
-    search_attempts = []
-    if query:
-        search_attempts.append({"type": "release", "catno": query, "per_page": 8})
-    if combined_query and combined_query != query:
-        search_attempts.append({"type": "release", "q": combined_query, "per_page": 8})
-    if title or artist_name:
-        params = {"type": "release", "per_page": 8}
-        if title:
-            params["release_title"] = title
-        if artist_name:
-            params["artist"] = artist_name
-        search_attempts.append(params)
-    if query:
-        search_attempts.append({"type": "release", "q": query, "per_page": 8})
-
-    seen_ids: set[str] = set()
-    merged_results: list[dict] = []
-    for params in search_attempts:
-        response = await client.get(
-            "https://api.discogs.com/database/search",
-            params=params,
-            headers=headers,
-        )
-        response.raise_for_status()
-        for item in response.json().get("results", []):
-            result_id = str(item.get("id") or item.get("resource_url") or item.get("uri") or item.get("title"))
-            if result_id in seen_ids:
-                continue
-            seen_ids.add(result_id)
-            merged_results.append(item)
-        if merged_results:
-            break
-
-    return merged_results
-
-
-@app.get("/health")
-async def health():
-    return {"ok": True, "service": "vinyl-check-api"}
-
-
-@app.get("/users/{user_id}/profile-draft")
-async def get_profile_draft(user_id: str):
-    if not db_pool:
-        return {"persisted": False, "profile": None}
-
-    try:
-        async with db_pool.acquire() as connection:
-            row = await connection.fetchrow(
-                """
-                select user_id, username, email, rating, transaction_count, genres, email_verified, updated_at
-                from user_profile_drafts
-                where user_id = $1
-                """,
-                user_id,
-            )
-    except asyncpg.PostgresError:
-        return {"persisted": False, "profile": None}
-
-    if not row:
-        return {"persisted": False, "profile": None}
-
-    return {
-        "persisted": True,
-        "profile": {
-            "id": row["user_id"],
-            "username": row["username"],
-            "email": row["email"],
-            "rating": float(row["rating"]),
-            "transactionCount": int(row["transaction_count"]),
-            "genres": normalize_json_list(row["genres"]),
-            "emailVerified": bool(row["email_verified"]),
-            "updatedAt": row["updated_at"].isoformat(),
+        "source": "opencv",
+        "persisted": False,
+        "surfaceScore": surface_score,
+        "scratchCount": scratch_count,
+        "scratchRisk": scratch_risk,
+        "reflectionRisk": reflection_risk,
+        "scratchRegions": scratch_regions,
+        "scratchDetails": {
+            "displayedRegions": len(scratch_regions),
+            "highSeverity": severity_counts["high"],
+            "mediumSeverity": severity_counts["medium"],
+            "lowSeverity": severity_counts["low"],
+            "reflectionRatio": round(reflection_ratio, 4),
+            "blurVariance": round(blur_variance, 1),
+            "exposure": round(exposure, 1),
+            "detectedDisc": bool(disc_circle),
         },
+        "dustOrReflectionNote": "강한 조명 반사는 먼지나 스크래치처럼 보일 수 있어 각도를 바꾼 추가 촬영을 권장합니다.",
+        "playbackImpact": playback_impact(scratch_risk, reflection_risk),
     }
 
 
-@app.put("/users/{user_id}/profile-draft")
-async def upsert_profile_draft(user_id: str, payload: ProfileDraftUpsert):
-    normalized_username = payload.username.strip() or "VinylLover"
-    normalized_genres = [genre.strip() for genre in payload.genres if genre.strip()][:5]
-
-    profile = {
-        "id": user_id,
-        "username": normalized_username,
-        "email": payload.email,
-        "rating": max(0.0, min(5.0, float(payload.rating))),
-        "transactionCount": max(0, int(payload.transactionCount)),
-        "genres": normalized_genres,
-        "emailVerified": bool(payload.emailVerified),
-    }
-
-    if not db_pool:
-        return {"persisted": False, "profile": profile}
-
-    try:
-        async with db_pool.acquire() as connection:
-            row = await connection.fetchrow(
-                """
-                insert into user_profile_drafts (
-                  user_id, username, email, rating, transaction_count, genres, email_verified
-                )
-                values ($1, $2, $3, $4, $5, $6::jsonb, $7)
-                on conflict (user_id) do update set
-                  username = excluded.username,
-                  email = excluded.email,
-                  rating = excluded.rating,
-                  transaction_count = excluded.transaction_count,
-                  genres = excluded.genres,
-                  email_verified = excluded.email_verified,
-                  updated_at = now()
-                returning updated_at
-                """,
-                user_id,
-                profile["username"],
-                profile["email"],
-                profile["rating"],
-                profile["transactionCount"],
-                json.dumps(profile["genres"], ensure_ascii=False),
-                profile["emailVerified"],
-            )
-    except asyncpg.PostgresError:
-        return {"persisted": False, "profile": profile}
-
+def fallback_surface(content: bytes, media_type: str) -> dict[str, Any]:
+    seed = int(hashlib.sha1(content[:200_000]).hexdigest()[:8], 16) if content else 0
+    scratch_count = (seed % 8) + (2 if media_type == "video" else 0)
+    reflection_bucket = (seed >> 4) % 4
+    scratch_risk = "high" if scratch_count >= 9 else "medium" if scratch_count >= 3 else "low"
+    reflection_risk = "high" if reflection_bucket >= 3 else "medium" if reflection_bucket else "low"
+    surface_score = max(45, min(86, 84 - scratch_count * 3 - reflection_bucket * 5 - ((seed >> 8) % 7)))
     return {
-        "persisted": True,
-        "profile": {
-            **profile,
-            "updatedAt": row["updated_at"].isoformat() if row else None,
+        "isRecord": True,
+        "confidence": min(90, surface_score + 3),
+        "signals": [
+            "서버가 이미지를 정밀 판독하지 못해 파일 특성 기반 보수 점수를 만들었습니다.",
+            f"스크래치 후보 {scratch_count}개, 반사 위험 {reflection_risk}로 임시 집계했습니다.",
+        ],
+        "source": "fallback",
+        "persisted": False,
+        "surfaceScore": surface_score,
+        "scratchCount": scratch_count,
+        "scratchRisk": scratch_risk,
+        "reflectionRisk": reflection_risk,
+        "scratchRegions": [],
+        "scratchDetails": {
+            "displayedRegions": 0,
+            "highSeverity": 0,
+            "mediumSeverity": 0,
+            "lowSeverity": 0,
+            "reflectionRatio": None,
+            "blurVariance": None,
+            "exposure": None,
+            "detectedDisc": False,
         },
+        "dustOrReflectionNote": "fallback 결과입니다. 실제 판매 전에는 밝은 환경에서 재촬영해 주세요.",
+        "playbackImpact": playback_impact(scratch_risk, reflection_risk),
     }
 
 
-@app.get("/users/{user_id}/listing-draft")
-async def get_listing_draft(user_id: str):
-    if not db_pool:
-        return {"persisted": False, "draft": None}
-
-    try:
-        async with db_pool.acquire() as connection:
-            row = await connection.fetchrow(
-                """
-                select draft, updated_at
-                from user_listing_drafts
-                where user_id = $1
-                """,
-                user_id,
-            )
-    except asyncpg.PostgresError:
-        return {"persisted": False, "draft": None}
-
-    if not row:
-        return {"persisted": False, "draft": None}
-
-    return {
-        "persisted": True,
-        "draft": normalize_json_object(row["draft"]),
-        "updatedAt": row["updated_at"].isoformat(),
-    }
-
-
-@app.put("/users/{user_id}/listing-draft")
-async def upsert_listing_draft(user_id: str, payload: ListingDraftUpsert):
-    draft = normalize_json_object(payload.draft)
-
-    if not db_pool:
-        return {"persisted": False, "draft": draft}
-
-    try:
-        async with db_pool.acquire() as connection:
-            row = await connection.fetchrow(
-                """
-                insert into user_listing_drafts (user_id, draft)
-                values ($1, $2::jsonb)
-                on conflict (user_id) do update set
-                  draft = excluded.draft,
-                  updated_at = now()
-                returning updated_at
-                """,
-                user_id,
-                json.dumps(draft, ensure_ascii=False),
-            )
-    except asyncpg.PostgresError:
-        return {"persisted": False, "draft": draft}
-
-    return {
-        "persisted": True,
-        "draft": draft,
-        "updatedAt": row["updated_at"].isoformat() if row else None,
-    }
-
-
-@app.delete("/users/{user_id}/listing-draft")
-async def delete_listing_draft(user_id: str):
-    if not db_pool:
-        return {"deleted": False}
-
-    try:
-        async with db_pool.acquire() as connection:
-            result = await connection.execute(
-                "delete from user_listing_drafts where user_id = $1",
-                user_id,
-            )
-    except asyncpg.PostgresError:
-        return {"deleted": False}
-
-    return {"deleted": not result.endswith(" 0")}
-
-
-async def load_chat_messages(chat_id: str) -> tuple[list[dict], bool]:
-    if db_pool:
-        try:
-            async with db_pool.acquire() as connection:
-                rows = await connection.fetch(
-                    """
-                    select id, chat_id, sender_id, sender_name, content, message_type, created_at
-                    from realtime_chat_messages
-                    where chat_id = $1
-                    order by created_at asc
-                    """,
-                    chat_id,
-                )
-                return [normalize_chat_message(dict(row)) for row in rows], True
-        except asyncpg.PostgresError as exc:
-            logger.warning("Failed to load chat messages from PostgreSQL: %s", exc)
-
-    chats = read_file_chats()
-    messages = chats.get(chat_id, [])
-    if not isinstance(messages, list):
-        messages = []
-    return [normalize_chat_message({**message, "chatId": chat_id}) for message in messages], True
-
-
-async def save_chat_message(chat_id: str, payload: ChatMessageCreate) -> dict:
-    content = payload.content.strip()
-    if not content:
-        raise HTTPException(status_code=400, detail="message content is required")
-
-    message = normalize_chat_message({
-        "id": f"msg-{int(datetime.now().timestamp() * 1000)}",
-        "chatId": chat_id,
-        "senderId": payload.sender_id.strip() or "buyer1",
-        "senderName": payload.sender_name.strip() or "사용자",
-        "message": content,
-        "timestamp": datetime.now().isoformat(),
-        "type": payload.message_type or "text",
-    })
-
-    if db_pool:
-        try:
-            async with db_pool.acquire() as connection:
-                row = await connection.fetchrow(
-                    """
-                    insert into realtime_chat_messages (
-                      id, chat_id, sender_id, sender_name, content, message_type
-                    )
-                    values ($1, $2, $3, $4, $5, $6)
-                    returning id, chat_id, sender_id, sender_name, content, message_type, created_at
-                    """,
-                    message["id"],
-                    chat_id,
-                    message["senderId"],
-                    message["senderName"],
-                    message["message"],
-                    message["type"],
-                )
-                return normalize_chat_message(dict(row))
-        except asyncpg.PostgresError as exc:
-            logger.warning("Failed to persist chat message to PostgreSQL: %s", exc)
-
-    chats = read_file_chats()
-    room = chats.setdefault(chat_id, [])
-    if not isinstance(room, list):
-        room = []
-        chats[chat_id] = room
-    room.append(message)
-    write_file_chats(chats)
-    return message
-
-
-@app.get("/chats/{chat_id}/messages")
-async def get_chat_messages(chat_id: str):
-    messages, persisted = await load_chat_messages(chat_id)
-    return {"chatId": chat_id, "persisted": persisted, "messages": messages}
-
-
-@app.post("/chats/{chat_id}/messages")
-async def post_chat_message(chat_id: str, payload: ChatMessageCreate):
-    message = await save_chat_message(chat_id, payload)
-    event = {"type": "message", "chatId": chat_id, "message": message}
-    await chat_manager.broadcast(chat_id, event)
-    return event
-
-
-@app.websocket("/ws/chats/{chat_id}")
-async def chat_websocket(websocket: WebSocket, chat_id: str):
-    await chat_manager.connect(chat_id, websocket)
-    try:
-        history, _ = await load_chat_messages(chat_id)
-        await websocket.send_json({"type": "history", "chatId": chat_id, "messages": history})
-        while True:
-            payload = await websocket.receive_json()
-            event_type = payload.get("type", "message")
-            if event_type == "ping":
-                await websocket.send_json({"type": "pong", "chatId": chat_id})
-                continue
-            if event_type != "message":
-                await websocket.send_json({"type": "error", "message": "unsupported event type"})
-                continue
-            message = await save_chat_message(
-                chat_id,
-                ChatMessageCreate(
-                    sender_id=str(payload.get("senderId") or payload.get("sender_id") or "buyer1"),
-                    sender_name=str(payload.get("senderName") or payload.get("sender_name") or "사용자"),
-                    content=str(payload.get("message") or payload.get("content") or ""),
-                    message_type=str(payload.get("messageType") or payload.get("message_type") or "text"),
-                ),
-            )
-            await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
-    except WebSocketDisconnect:
-        chat_manager.disconnect(chat_id, websocket)
-    except HTTPException as exc:
-        await websocket.send_json({"type": "error", "message": exc.detail})
-    finally:
-        chat_manager.disconnect(chat_id, websocket)
-
-
-@app.get("/listings")
-async def list_listings(q: str | None = None):
-    persisted: list[dict] = []
-    if db_pool:
-        try:
-            async with db_pool.acquire() as connection:
-                rows = await connection.fetch(
-                    """
-                    select id, seller_id, title, artist, catalog_number, price, description,
-                           tags, images, genre, year, location, audio_grade, audio_score,
-                           jacket_grade, jacket_score, is_rare, is_first_press,
-                           analysis_report, views, created_at
-                    from listings
-                    order by created_at desc
-                    """
-                )
-                persisted = [listing_to_album(dict(row)) for row in rows]
-        except asyncpg.PostgresError:
-            persisted = []
-    else:
-        persisted = [listing_to_album(item) for item in read_file_listings()]
-
-    listings = persisted + [listing_to_album(item) for item in MOCK_LISTINGS]
-    if not q:
-        return listings
-
-    normalized = q.lower()
-    return [
-        item
-        for item in listings
-        if normalized in item["title"].lower()
-        or normalized in item["artist"].lower()
-        or normalized in item["catalogNumber"].lower()
-    ]
-
-
-@app.post("/listings")
-async def create_listing(payload: ListingCreate):
-    title = payload.title.strip()
-    if not title:
-        raise HTTPException(status_code=400, detail="title is required")
-    if payload.price <= 0:
-        raise HTTPException(status_code=400, detail="price must be positive")
-
-    now = datetime.now()
-    listing_id = f"listing-{int(now.timestamp() * 1000)}"
-    listing = {
-        "id": listing_id,
-        "seller_id": payload.user_id or "seller1",
-        "title": title,
-        "artist": payload.artist or "",
-        "catalog_number": payload.catalog_number or "",
-        "price": payload.price,
-        "description": payload.description or "",
-        "tags": normalize_tags(payload.tags),
-        "images": payload.images,
-        "genre": payload.genre or "",
-        "year": payload.year,
-        "location": payload.location or "지역 미입력",
-        "audio_grade": payload.audio_grade,
-        "audio_score": payload.audio_score,
-        "jacket_grade": payload.jacket_grade,
-        "jacket_score": payload.jacket_score,
-        "is_rare": payload.is_rare,
-        "is_first_press": payload.is_first_press,
-        "analysis_report": payload.analysis_report,
-        "views": 0,
-        "created_at": now.isoformat(),
-        "owned_by_me": True,
-    }
-
-    persisted = False
-    if db_pool:
-        try:
-            async with db_pool.acquire() as connection:
-                await connection.execute(
-                    """
-                    insert into listings (
-                      id, seller_id, title, artist, catalog_number, price, description,
-                      tags, images, genre, year, location, audio_grade, audio_score,
-                      jacket_grade, jacket_score, is_rare, is_first_press, analysis_report
-                    )
-                    values (
-                      $1, $2, $3, $4, $5, $6, $7,
-                      $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14,
-                      $15, $16, $17, $18, $19::jsonb
-                    )
-                    """,
-                    listing["id"],
-                    listing["seller_id"],
-                    listing["title"],
-                    listing["artist"],
-                    listing["catalog_number"],
-                    listing["price"],
-                    listing["description"],
-                    json.dumps(listing["tags"], ensure_ascii=False),
-                    json.dumps(listing["images"], ensure_ascii=False),
-                    listing["genre"],
-                    listing["year"],
-                    listing["location"],
-                    listing["audio_grade"],
-                    listing["audio_score"],
-                    listing["jacket_grade"],
-                    listing["jacket_score"],
-                    listing["is_rare"],
-                    listing["is_first_press"],
-                    json.dumps(listing["analysis_report"], ensure_ascii=False),
-                )
-                persisted = True
-        except asyncpg.PostgresError as exc:
-            logger.warning("Failed to persist listing to PostgreSQL: %s", exc)
-
-    if not persisted:
-        listings = read_file_listings()
-        listings.insert(0, listing)
-        write_file_listings(listings)
-        persisted = True
-
-    return {
-        "status": "published",
-        "persisted": persisted,
-        "listing": listing_to_album(listing),
-    }
-
-
-@app.post("/uploads/images")
-async def upload_image(file: Annotated[UploadFile, File()]):
-    return {"filename": file.filename, "content_type": file.content_type, "url": f"/media/{file.filename}"}
-
-
-def sample_analysis(file: UploadFile | None, noisy: bool):
-    if not file:
-        return None
-    return {
-        "filename": file.filename,
-        "requestedSeconds": 30,
-        "estimatedNoiseLevel": "medium" if noisy else "low",
-        "scratchRisk": "visible-scratch-section" if noisy else "low",
-        "usableForListingSample": not noisy,
-    }
-
-
-def audio_grade_from_score(score: int) -> str:
-    if score >= 90:
-        return "NM"
-    if score >= 82:
-        return "VG+"
-    if score >= 72:
-        return "VG"
-    if score >= 62:
-        return "G+"
-    return "G"
-
-
-def audio_risk_label(score: int) -> str:
-    if score >= 84:
-        return "low"
-    if score >= 72:
-        return "medium"
-    return "high"
-
-
-def analyze_audio_bytes(content: bytes, filename: str | None, content_type: str | None, label: str):
-    import librosa
-
-    suffix = os.path.splitext(filename or "")[1] or ".wav"
-    temp_path = ""
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
-            temp_file.write(content)
-            temp_path = temp_file.name
-
-        waveform, sr = librosa.load(temp_path, sr=22050, mono=False, duration=35)
-        if waveform.ndim == 1:
-            mono = waveform.astype(np.float32)
-            channel_imbalance_db = 0.0
-        else:
-            mono = np.mean(waveform, axis=0).astype(np.float32)
-            channel_rms = np.sqrt(np.mean(np.square(waveform), axis=1) + 1e-12)
-            channel_imbalance_db = float(abs(20 * np.log10((channel_rms[0] + 1e-9) / (channel_rms[-1] + 1e-9))))
-
-        if mono.size < sr:
-            raise ValueError("audio sample is too short")
-
-        mono = mono - float(np.mean(mono))
-        duration = float(mono.size / sr)
-        rms = float(np.sqrt(np.mean(np.square(mono)) + 1e-12))
-        peak = float(np.max(np.abs(mono)) + 1e-12)
-        rms_db = float(20 * np.log10(rms + 1e-12))
-        peak_db = float(20 * np.log10(peak + 1e-12))
-        clipping_ratio = float(np.mean(np.abs(mono) >= 0.98))
-
-        frame_rms = librosa.feature.rms(y=mono, frame_length=2048, hop_length=512)[0]
-        frame_rms_db = librosa.amplitude_to_db(frame_rms + 1e-9, ref=1.0)
-        noise_floor_db = float(np.percentile(frame_rms_db, 15))
-        loud_floor_gap_db = float(np.percentile(frame_rms_db, 90) - np.percentile(frame_rms_db, 15))
-
-        diff = np.abs(np.diff(mono))
-        threshold = max(float(np.mean(diff) + 6.0 * np.std(diff)), float(np.percentile(diff, 99.75)))
-        raw_click_indices = np.flatnonzero(diff > threshold)
-        if raw_click_indices.size:
-            separated = [int(raw_click_indices[0])]
-            min_gap = int(sr * 0.025)
-            for index in raw_click_indices[1:]:
-                if int(index) - separated[-1] >= min_gap:
-                    separated.append(int(index))
-            click_count = len(separated)
-        else:
-            click_count = 0
-        clicks_per_minute = float(click_count / max(duration, 1.0) * 60.0)
-
-        zcr = float(np.mean(librosa.feature.zero_crossing_rate(mono, frame_length=2048, hop_length=512)))
-        spectral_centroid = float(np.mean(librosa.feature.spectral_centroid(y=mono, sr=sr)))
-        spectral_flatness = float(np.mean(librosa.feature.spectral_flatness(y=mono)))
-
-        score = 94.0
-        score -= min(22.0, clicks_per_minute * 0.85)
-        if noise_floor_db > -36:
-            score -= min(18.0, (noise_floor_db + 36) * 1.6)
-        elif noise_floor_db > -48:
-            score -= min(8.0, (noise_floor_db + 48) * 0.55)
-        score -= min(12.0, clipping_ratio * 800.0)
-        score -= min(6.0, max(0.0, channel_imbalance_db - 1.5) * 1.2)
-        if loud_floor_gap_db < 12:
-            score -= (12 - loud_floor_gap_db) * 0.5
-        if zcr > 0.18:
-            score -= min(6.0, (zcr - 0.18) * 30.0)
-        if spectral_flatness > 0.08:
-            score -= min(6.0, (spectral_flatness - 0.08) * 45.0)
-        score = int(max(45, min(96, round(score))))
-
-        estimated_noise = "high" if noise_floor_db > -34 or clicks_per_minute >= 16 else "medium" if noise_floor_db > -46 or clicks_per_minute >= 6 else "low"
-        scratch_risk = "high" if clicks_per_minute >= 16 else "medium" if clicks_per_minute >= 6 else "low"
-        clipping_risk = "high" if clipping_ratio >= 0.01 else "medium" if clipping_ratio >= 0.002 else "low"
-        usable = label == "good" and score >= 78 and clipping_risk != "high"
-
-        return {
-            "filename": filename or "audio-sample",
-            "requestedSeconds": 30,
-            "durationSeconds": round(duration, 1),
-            "sampleRate": sr,
-            "score": score,
-            "estimatedNoiseLevel": estimated_noise,
-            "scratchRisk": scratch_risk,
-            "usableForListingSample": usable,
-            "clickCount": click_count,
-            "clicksPerMinute": round(clicks_per_minute, 1),
-            "noiseFloorDb": round(noise_floor_db, 1),
-            "dynamicRangeDb": round(loud_floor_gap_db, 1),
-            "peakDb": round(peak_db, 1),
-            "rmsDb": round(rms_db, 1),
-            "clippingRisk": clipping_risk,
-            "channelImbalanceDb": round(channel_imbalance_db, 1),
-            "spectralCentroid": round(spectral_centroid, 0),
-            "spectralFlatness": round(spectral_flatness, 4),
-        }
-    finally:
-        if temp_path:
-            try:
-                os.unlink(temp_path)
-            except OSError:
-                pass
-
-
-async def analyze_audio_upload(file: UploadFile | None, label: str):
-    if not file:
-        return None
+@app.post("/analysis/lp-recognition")
+async def analyze_lp_recognition(file: Annotated[UploadFile, File()], media_type: Annotated[str, Form()] = "image"):
     content = await file.read()
-    if not content:
-        return None
-    return analyze_audio_bytes(content, file.filename, file.content_type, label)
+    if media_type == "image":
+        result = surface_condition_from_image(content, file.content_type)
+        if result:
+            return result
+    return fallback_surface(content, "video" if media_type == "video" else "image")
 
 
-def analyze_jacket_condition_cv(content: bytes, content_type: str | None):
-    normalized_type = (content_type or "").lower()
-    if not normalized_type.startswith("image/"):
-        return JacketConditionResult(
-            jacketScore=78,
-            jacketGrade="VG",
-            cornerWear="medium",
-            ringWear="medium",
-            stainRisk="medium",
-            tearOrCreaseRisk="medium",
-            notes=["이미지 형식이 명확하지 않아 보수적인 자켓 상태 점수를 적용했습니다."],
-        )
-
-    image_array = np.frombuffer(content, dtype=np.uint8)
-    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+@app.post("/analysis/jacket-condition")
+async def analyze_jacket_condition(file: Annotated[UploadFile, File()]):
+    content = await file.read()
+    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
-        return JacketConditionResult(
-            jacketScore=76,
-            jacketGrade="VG",
-            cornerWear="medium",
-            ringWear="medium",
-            stainRisk="medium",
-            tearOrCreaseRisk="medium",
-            notes=["자켓 이미지를 읽지 못해 실물 추가 확인을 권장합니다."],
-        )
-
+        return {
+            "jacketScore": 70,
+            "jacketGrade": "VG",
+            "cornerWear": "medium",
+            "ringWear": "medium",
+            "stainRisk": "medium",
+            "tearOrCreaseRisk": "medium",
+            "jacketDetails": {
+                "edgeDensity": None,
+                "stainRatio": None,
+                "creaseCount": None,
+                "ringWearDetected": False,
+            },
+            "notes": ["자켓 이미지를 읽지 못해 보수적인 점수를 적용했습니다."],
+        }
     height, width = image.shape[:2]
-    max_side = 900
-    scale = min(1.0, max_side / max(height, width))
-    if scale < 1.0:
-        image = cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
-        height, width = image.shape[:2]
-
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    min_side = min(width, height)
-
-    edge = max(10, int(min_side * 0.08))
+    min_side = min(height, width)
+    edge = max(12, int(min_side * 0.08))
     edge_mask = np.zeros((height, width), dtype=np.uint8)
     edge_mask[:edge, :] = 255
     edge_mask[-edge:, :] = 255
     edge_mask[:, :edge] = 255
     edge_mask[:, -edge:] = 255
     edges = cv2.Canny(gray, 55, 150)
-    edge_density = float(np.count_nonzero(cv2.bitwise_and(edges, edges, mask=edge_mask))) / float(np.count_nonzero(edge_mask))
-
-    corner = max(18, int(min_side * 0.16))
-    corner_patches = [
-        gray[:corner, :corner],
-        gray[:corner, -corner:],
-        gray[-corner:, :corner],
-        gray[-corner:, -corner:],
-    ]
-    corner_variation = float(np.mean([np.std(patch) for patch in corner_patches if patch.size]))
-    corner_wear = risk_level(edge_density + corner_variation / 260.0, 0.13, 0.22)
-
-    blurred = cv2.medianBlur(gray, 5)
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.25,
-        minDist=max(80, min_side // 2),
-        param1=80,
-        param2=24,
-        minRadius=int(min_side * 0.23),
-        maxRadius=int(min_side * 0.48),
-    )
-    ring_wear = "medium" if circles is not None else "low"
-    if circles is not None and len(circles[0]) >= 2:
-        ring_wear = "high"
-
-    saturation = hsv[:, :, 1]
-    value = hsv[:, :, 2]
-    low_sat_dark = cv2.inRange(hsv, np.array([0, 0, 35]), np.array([179, 70, 145]))
-    stain_ratio = float(np.count_nonzero(low_sat_dark)) / float(width * height)
-    value_std = float(np.std(value))
-    stain_risk = risk_level(stain_ratio + value_std / 900.0, 0.12, 0.24)
-
-    line_segments = cv2.HoughLinesP(
-        edges,
-        rho=1,
-        theta=np.pi / 180,
-        threshold=70,
-        minLineLength=max(45, min_side // 5),
-        maxLineGap=10,
-    )
-    crease_count = 0
-    if line_segments is not None:
-        for x1, y1, x2, y2 in line_segments[:, 0]:
-            length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-            if length >= min_side * 0.22:
-                crease_count += 1
-    tear_or_crease_risk = "high" if crease_count >= 8 else "medium" if crease_count >= 3 else "low"
-
-    risk_penalty = {
-        "low": 0,
-        "medium": 7,
-        "high": 15,
-    }
-    score = 94
-    score -= risk_penalty[corner_wear]
-    score -= risk_penalty[ring_wear]
-    score -= risk_penalty[stain_risk]
-    score -= risk_penalty[tear_or_crease_risk]
-    score = max(55, min(96, score))
-    grade = grade_from_score(score)
-
-    notes: list[str] = []
-    notes.append("모서리 마모가 낮게 보입니다." if corner_wear == "low" else "모서리/테두리 마모 후보가 감지되었습니다.")
-    notes.append("링웨어가 약합니다." if ring_wear == "low" else "중앙 원형 링웨어 후보가 감지되었습니다.")
-    notes.append("얼룩 또는 변색 후보가 적습니다." if stain_risk == "low" else "얼룩/변색 후보가 있어 실물 확인을 권장합니다.")
-    notes.append("큰 접힘이나 찢김 후보는 적습니다." if tear_or_crease_risk == "low" else "긴 선형 접힘/찢김 후보가 감지되었습니다.")
-
-    return JacketConditionResult(
-        jacketScore=score,
-        jacketGrade=grade,
-        cornerWear=corner_wear,
-        ringWear=ring_wear,
-        stainRisk=stain_risk,
-        tearOrCreaseRisk=tear_or_crease_risk,
-        notes=notes,
-    )
-
-
-@app.post("/analysis/jacket-condition")
-async def analyze_jacket_condition(file: Annotated[UploadFile, File()]):
-    content = await file.read()
-    return analyze_jacket_condition_cv(content, file.content_type)
-
-
-@app.post("/analysis/audio")
-async def analyze_audio(file: Annotated[UploadFile, File()]):
-    sample = await analyze_audio_upload(file, "good")
-    score = int(sample["score"]) if sample else 60
+    edge_density = float(np.count_nonzero(cv2.bitwise_and(edges, edges, mask=edge_mask))) / float(max(1, np.count_nonzero(edge_mask)))
+    corner_wear = risk_label(edge_density, 0.10, 0.18)
+    stain_ratio = float(np.count_nonzero(cv2.inRange(hsv, np.array([0, 0, 35]), np.array([179, 75, 145])))) / float(height * width)
+    stain_risk = risk_label(stain_ratio, 0.10, 0.22)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=70, minLineLength=max(45, min_side // 5), maxLineGap=10)
+    crease_count = 0 if lines is None else len(lines)
+    tear_or_crease_risk = "high" if crease_count >= 10 else "medium" if crease_count >= 4 else "low"
+    ring_wear = "medium" if cv2.HoughCircles(cv2.medianBlur(gray, 5), cv2.HOUGH_GRADIENT, 1.25, max(80, min_side // 2), param1=80, param2=24, minRadius=int(min_side * 0.23), maxRadius=int(min_side * 0.48)) is not None else "low"
+    penalty = {"low": 0, "medium": 7, "high": 15}
+    score = int(max(55, min(94, 94 - penalty[corner_wear] - penalty[ring_wear] - penalty[stain_risk] - penalty[tear_or_crease_risk])))
     return {
-        "filename": file.filename,
-        "audio_score": score,
-        "audio_grade": audio_grade_from_score(score),
-        "noise_level": sample["estimatedNoiseLevel"] if sample else "unknown",
-        "certified": bool(sample and score >= 72),
-        "sample": sample,
+        "jacketScore": score,
+        "jacketGrade": grade_from_score(score),
+        "cornerWear": corner_wear,
+        "ringWear": ring_wear,
+        "stainRisk": stain_risk,
+        "tearOrCreaseRisk": tear_or_crease_risk,
+        "jacketDetails": {
+            "edgeDensity": round(edge_density, 4),
+            "stainRatio": round(stain_ratio, 4),
+            "creaseCount": int(crease_count),
+            "ringWearDetected": ring_wear != "low",
+        },
+        "notes": [
+            "모서리 마모와 테두리 손상 후보를 확인했습니다.",
+            "링웨어, 얼룩/변색, 접힘/찢김 위험도를 판매 설명용으로 요약했습니다.",
+        ],
     }
 
 
-@app.post("/analysis/lp-recognition")
-async def analyze_lp_recognition(
-    file: Annotated[UploadFile, File()],
-    media_type: Annotated[str, Form()] = "image",
-):
-    safe_media_type = "video" if media_type == "video" else "image"
+def analyze_audio_bytes(content: bytes, filename: str | None, label: str, ambient_noise_floor_db: float | None = None) -> dict[str, Any]:
+    import librosa
+
+    suffix = os.path.splitext(filename or "")[1] or ".webm"
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(content)
+            temp_path = temp_file.name
+        waveform, sr = librosa.load(temp_path, sr=22050, mono=False, duration=35)
+        mono = waveform.astype(np.float32) if waveform.ndim == 1 else np.mean(waveform, axis=0).astype(np.float32)
+        if mono.size < sr:
+            raise ValueError("audio sample is too short")
+        mono = mono - float(np.mean(mono))
+        duration = float(mono.size / sr)
+        peak = float(np.max(np.abs(mono)) + 1e-12)
+        clipping_ratio = float(np.mean(np.abs(mono) >= 0.98))
+        frame_rms = librosa.feature.rms(y=mono, frame_length=2048, hop_length=512)[0]
+        frame_rms_db = librosa.amplitude_to_db(frame_rms + 1e-9, ref=1.0)
+        noise_floor_db = float(np.percentile(frame_rms_db, 15))
+        dynamic_range_db = float(np.percentile(frame_rms_db, 90) - np.percentile(frame_rms_db, 15))
+        diff = np.abs(np.diff(mono))
+        median_diff = float(np.median(diff))
+        mad_diff = float(np.median(np.abs(diff - median_diff)) + 1e-9)
+        transient_floor = median_diff + 10.0 * mad_diff
+        percentile_floor = float(np.percentile(diff, 99.82))
+        threshold = max(transient_floor, percentile_floor)
+        raw_clicks = np.flatnonzero(diff > threshold)
+        separated: list[int] = []
+        min_gap = int(sr * 0.025)
+        for index in raw_clicks:
+            if not separated or int(index) - separated[-1] >= min_gap:
+                separated.append(int(index))
+        click_count = len(separated)
+        clicks_per_minute = click_count / max(duration, 1.0) * 60
+        zcr = float(np.mean(librosa.feature.zero_crossing_rate(mono, frame_length=2048, hop_length=512)))
+        flatness = float(np.mean(librosa.feature.spectral_flatness(y=mono)))
+        adjusted_noise_floor_db = noise_floor_db
+        if ambient_noise_floor_db is not None:
+            # Convert dB floors to linear power and subtract the measured room/microphone baseline.
+            sample_power = 10 ** (noise_floor_db / 10)
+            ambient_power = 10 ** (ambient_noise_floor_db / 10)
+            adjusted_power = max(sample_power - ambient_power * 0.75, 1e-9)
+            adjusted_noise_floor_db = float(10 * np.log10(adjusted_power))
+        confidence = 88.0
+        if duration < 8:
+            confidence -= 22
+        elif duration < 15:
+            confidence -= 10
+        if ambient_noise_floor_db is None and label != "ambient":
+            confidence -= 16
+        if clipping_ratio >= 0.01:
+            confidence -= 12
+
+        score = 94.0
+        score -= min(24.0, clicks_per_minute * 0.95)
+        score -= min(18.0, max(0.0, adjusted_noise_floor_db + 48) * 0.75)
+        score -= min(12.0, clipping_ratio * 800)
+        score -= max(0.0, 12 - dynamic_range_db) * 0.55
+        score -= min(6.0, max(0.0, zcr - 0.18) * 30)
+        score -= min(6.0, max(0.0, flatness - 0.08) * 45)
+        if label == "noisy":
+            score -= 2
+        if label == "ambient":
+            score = 0
+        score = int(max(42, min(96, round(score))))
+        scratch_risk = "high" if clicks_per_minute >= 16 else "medium" if clicks_per_minute >= 6 else "low"
+        clipping_risk = "high" if clipping_ratio >= 0.01 else "medium" if clipping_ratio >= 0.002 else "low"
+        return {
+            "filename": filename or "audio-sample",
+            "requestedSeconds": 30,
+            "durationSeconds": round(duration, 1),
+            "score": score,
+            "estimatedNoiseLevel": "high" if noise_floor_db > -34 else "medium" if noise_floor_db > -46 else "low",
+            "scratchRisk": scratch_risk,
+            "usableForListingSample": label == "good" and score >= 78 and clipping_risk != "high",
+            "clickCount": click_count,
+            "clicksPerMinute": round(clicks_per_minute, 1),
+            "noiseFloorDb": round(noise_floor_db, 1),
+            "adjustedNoiseFloorDb": round(adjusted_noise_floor_db, 1),
+            "dynamicRangeDb": round(dynamic_range_db, 1),
+            "analysisConfidence": int(max(20, min(96, round(confidence)))),
+            "peakDb": round(20 * np.log10(peak), 1),
+            "clippingRisk": clipping_risk,
+        }
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+
+async def read_audio_upload(file: UploadFile | None, label: str, ambient_noise_floor_db: float | None = None) -> dict[str, Any] | None:
+    if not file:
+        return None
     content = await file.read()
-    file_size = len(content)
-    source = "heuristic"
-    opencv_result = (
-        opencv_lp_recognition(content, file.content_type)
-        if safe_media_type == "image"
-        else opencv_video_surface_recognition(content, file.content_type)
-    )
-
-    if opencv_result:
-        if isinstance(opencv_result, dict):
-            is_record = bool(opencv_result["is_record"])
-            confidence = int(opencv_result["confidence"])
-            signals = list(opencv_result["signals"])
-            condition = {
-                "surfaceScore": int(opencv_result["surfaceScore"]),
-                "scratchCount": int(opencv_result["scratchCount"]),
-                "scratchRisk": str(opencv_result["scratchRisk"]),
-                "reflectionRisk": str(opencv_result["reflectionRisk"]),
-                "scratchRegions": list(opencv_result.get("scratchRegions", [])),
-                "dustOrReflectionNote": str(opencv_result["dustOrReflectionNote"]),
-                "playbackImpact": str(opencv_result["playbackImpact"]),
-            }
-        else:
-            is_record, confidence, signals = opencv_result
-            condition = surface_condition_payload(confidence=confidence, source="opencv")
-        source = "opencv"
-    else:
-        ai_result = None
-        if safe_media_type == "image":
-            ai_result = await ai_lp_recognition(content, file.filename, file.content_type)
-
-        if ai_result:
-            is_record, confidence, signals = ai_result
-            source = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1-mini")
-            condition = heuristic_surface_condition_payload(
-                file_size=file_size,
-                media_type=safe_media_type,
-                filename=file.filename,
-                content_type=file.content_type,
-                confidence=confidence,
-            )
-        else:
-            is_record, confidence, signals = heuristic_lp_recognition(
-                file_size=file_size,
-                media_type=safe_media_type,
-                filename=file.filename,
-                content_type=file.content_type,
-            )
-            condition = heuristic_surface_condition_payload(
-                file_size=file_size,
-                media_type=safe_media_type,
-                filename=file.filename,
-                content_type=file.content_type,
-                confidence=confidence,
-            )
-    is_record, confidence, signals = normalize_visual_condition_result(is_record, confidence, signals)
-    confidence = min(confidence, condition["surfaceScore"] + 3)
-    analysis_id = await save_lp_recognition_analysis(
-        media_type=safe_media_type,
-        filename=file.filename,
-        content_type=file.content_type,
-        file_size=file_size,
-        is_record=is_record,
-        confidence=confidence,
-        signals=signals,
-        source=source,
-    )
-    return LpRecognitionResult(
-        id=analysis_id,
-        isRecord=is_record,
-        confidence=confidence,
-        signals=signals,
-        source=source,
-        persisted=analysis_id is not None,
-        **condition,
-    )
+    if not content:
+        return None
+    return analyze_audio_bytes(content, file.filename, label, ambient_noise_floor_db)
 
 
 @app.post("/analysis/audio-samples")
 async def analyze_audio_samples(
     good_sample: Annotated[UploadFile | None, File()] = None,
     noisy_sample: Annotated[UploadFile | None, File()] = None,
+    ambient_sample: Annotated[UploadFile | None, File()] = None,
 ):
     try:
-        good_result = await analyze_audio_upload(good_sample, "good")
-        noisy_result = await analyze_audio_upload(noisy_sample, "noisy")
+        ambient = await read_audio_upload(ambient_sample, "ambient")
+        ambient_noise_floor = float(ambient["noiseFloorDb"]) if ambient and ambient.get("noiseFloorDb") is not None else None
+        good = await read_audio_upload(good_sample, "good", ambient_noise_floor)
+        noisy = await read_audio_upload(noisy_sample, "noisy", ambient_noise_floor)
     except Exception as exc:
-        logger.warning("librosa audio analysis failed; falling back to heuristic: %s", exc)
-        size_seed = (good_sample.size or 0 if good_sample else 0) + (noisy_sample.size or 0 if noisy_sample else 0)
-        audio_score = max(62, min(86, 82 - round((size_seed % 17) / 2)))
+        logger.warning("audio analysis fallback: %s", exc)
+        seed = (getattr(good_sample, "size", 0) or 0) + (getattr(noisy_sample, "size", 0) or 0) + (getattr(ambient_sample, "size", 0) or 0)
+        score = int(max(58, min(84, 78 - (seed % 13))))
         return {
             "source": "fallback",
-            "audioScore": audio_score,
-            "audioGrade": audio_grade_from_score(audio_score),
-            "playbackRisk": audio_risk_label(audio_score),
+            "audioScore": score,
+            "audioGrade": grade_from_score(score),
+            "playbackRisk": "medium" if score >= 70 else "high",
             "clickCount": 0,
             "noiseFloorDb": None,
+            "ambientNoiseFloorDb": None,
+            "adjustedNoiseFloorDb": None,
             "dynamicRangeDb": None,
-            "goodSample": sample_analysis(good_sample, False),
-            "noisySample": sample_analysis(noisy_sample, True),
-            "summary": "오디오 파일을 직접 해석하지 못해 보수적인 fallback 점수를 적용했습니다.",
+            "analysisConfidence": 35,
+            "warnings": ["오디오 파일을 직접 해석하지 못해 보수적인 fallback 점수를 적용했습니다."],
+            "goodSample": None,
+            "noisySample": None,
+            "ambientSample": None,
+            "summary": "녹음 파일을 직접 해석하지 못해 보수적인 fallback 점수를 적용했습니다.",
         }
 
-    sample_scores = [item["score"] for item in [good_result, noisy_result] if item]
-    if not sample_scores:
-        audio_score = 0
-    elif good_result and noisy_result:
-        gap_penalty = max(0, good_result["score"] - noisy_result["score"] - 10) * 0.25
-        audio_score = int(round(good_result["score"] * 0.62 + noisy_result["score"] * 0.38 - gap_penalty))
+    samples = [sample for sample in [good, noisy] if sample]
+    if not samples:
+        return {
+            "source": "librosa",
+            "audioScore": 0,
+            "audioGrade": "미측정",
+            "playbackRisk": "high",
+            "clickCount": 0,
+            "noiseFloorDb": None,
+            "ambientNoiseFloorDb": ambient_noise_floor,
+            "adjustedNoiseFloorDb": None,
+            "dynamicRangeDb": None,
+            "analysisConfidence": 0,
+            "warnings": ["좋은 구간 또는 안 좋은 구간 녹음이 필요합니다."],
+            "goodSample": None,
+            "noisySample": None,
+            "ambientSample": ambient,
+            "summary": "좋은 구간 또는 안 좋은 구간 녹음이 필요합니다.",
+        }
+    if good and noisy:
+        score = int(round(good["score"] * 0.68 + noisy["score"] * 0.32))
+        if noisy["scratchRisk"] == "high":
+            score -= 6
+        elif noisy["scratchRisk"] == "medium":
+            score -= 3
     else:
-        audio_score = int(sample_scores[0])
-    audio_score = max(45, min(96, audio_score))
-    click_count = int((good_result or {}).get("clickCount", 0) + (noisy_result or {}).get("clickCount", 0))
-    noise_values = [item["noiseFloorDb"] for item in [good_result, noisy_result] if item]
-    dynamic_values = [item["dynamicRangeDb"] for item in [good_result, noisy_result] if item]
-    playback_risk = audio_risk_label(audio_score)
-    if noisy_result and noisy_result["scratchRisk"] == "high":
-        playback_risk = "high"
-    elif noisy_result and noisy_result["scratchRisk"] == "medium" and playback_risk == "low":
-        playback_risk = "medium"
-
-    summary_parts = [
-        f"클릭/팝 후보 {click_count}개",
-        f"노이즈 플로어 {round(float(np.mean(noise_values)), 1)} dB" if noise_values else "노이즈 플로어 미측정",
-        f"다이내믹 레인지 {round(float(np.mean(dynamic_values)), 1)} dB" if dynamic_values else "다이내믹 레인지 미측정",
-    ]
+        score = int(samples[0]["score"] - 4)
+    score = int(max(42, min(96, score)))
+    click_count = int(sum(int(sample.get("clickCount", 0)) for sample in samples))
+    noise_values = [float(sample["noiseFloorDb"]) for sample in samples if sample.get("noiseFloorDb") is not None]
+    adjusted_noise_values = [float(sample["adjustedNoiseFloorDb"]) for sample in samples if sample.get("adjustedNoiseFloorDb") is not None]
+    dynamic_values = [float(sample["dynamicRangeDb"]) for sample in samples if sample.get("dynamicRangeDb") is not None]
+    avg_noise = round(float(np.mean(noise_values)), 1) if noise_values else None
+    avg_adjusted_noise = round(float(np.mean(adjusted_noise_values)), 1) if adjusted_noise_values else avg_noise
+    avg_dynamic = round(float(np.mean(dynamic_values)), 1) if dynamic_values else None
+    warnings: list[str] = []
+    if ambient_noise_floor is None:
+        warnings.append("주변음 기준 샘플이 없어 노이즈 보정 신뢰도가 낮습니다.")
+    elif ambient_noise_floor > -36:
+        warnings.append("측정된 주변음이 큽니다. 조용한 환경에서 다시 측정하면 정확도가 올라갑니다.")
+        score -= 3
+    score = int(max(42, min(96, score)))
+    playback_risk = "high" if score < 70 or any(sample.get("scratchRisk") == "high" for sample in samples) else "medium" if score < 82 or any(sample.get("scratchRisk") == "medium" for sample in samples) else "low"
+    confidence_values = [int(sample.get("analysisConfidence", 70)) for sample in samples]
+    analysis_confidence = int(max(20, min(96, round(float(np.mean(confidence_values)) if confidence_values else 50))))
+    if ambient_noise_floor is not None:
+        analysis_confidence = min(96, analysis_confidence + 8)
     return {
         "source": "librosa",
-        "audioScore": audio_score,
-        "audioGrade": audio_grade_from_score(audio_score),
+        "audioScore": score,
+        "audioGrade": grade_from_score(score),
         "playbackRisk": playback_risk,
         "clickCount": click_count,
-        "noiseFloorDb": round(float(np.mean(noise_values)), 1) if noise_values else None,
-        "dynamicRangeDb": round(float(np.mean(dynamic_values)), 1) if dynamic_values else None,
-        "goodSample": good_result,
-        "noisySample": noisy_result,
-        "summary": " · ".join(summary_parts),
+        "noiseFloorDb": avg_noise,
+        "ambientNoiseFloorDb": round(ambient_noise_floor, 1) if ambient_noise_floor is not None else None,
+        "adjustedNoiseFloorDb": avg_adjusted_noise,
+        "dynamicRangeDb": avg_dynamic,
+        "analysisConfidence": analysis_confidence,
+        "warnings": warnings,
+        "goodSample": good,
+        "noisySample": noisy,
+        "ambientSample": ambient,
+        "summary": f"클릭/팝 후보 {click_count}개, 노이즈 플로어 {avg_noise if avg_noise is not None else '-'} dB, 다이내믹 레인지 {avg_dynamic if avg_dynamic is not None else '-'} dB",
     }
 
 
-@app.get("/pricing/recommendation")
-async def recommend_price(catalog_number: str | None = None, title: str | None = None):
-    match = next(
-        (
-            item
-            for item in MOCK_LISTINGS
-            if catalog_number and item["catalog_number"].lower() == catalog_number.lower()
-        ),
-        None,
-    )
-    if match:
-        return {"recommended_price": match["price"], "reason": "catalog_number_match"}
-    return {"recommended_price": 275000, "reason": "market_average"}
+def discogs_candidate(result: dict[str, Any], catalog_number: str) -> dict[str, Any]:
+    title_text = str(result.get("title") or "Unknown release")
+    release_id = result.get("id")
+    if " - " in title_text:
+        artist, title = title_text.split(" - ", 1)
+    else:
+        artist, title = "Unknown artist", title_text
+    labels = result.get("label") if isinstance(result.get("label"), list) else []
+    return {
+        "id": f"discogs-{release_id or uuid4().hex[:8]}",
+        "releaseId": int(release_id or 0),
+        "title": title,
+        "artist": artist,
+        "year": int(result.get("year") or 0),
+        "label": str(labels[0]) if labels else "Unknown label",
+        "catalogNumber": str(result.get("catno") or catalog_number),
+        "country": str(result.get("country") or "Unknown"),
+        "confidence": 88,
+    }
 
 
 @app.get("/discogs/search")
-async def search_discogs(
-    catalog_number: str | None = None,
-    album_title: str | None = None,
-    artist: str | None = None,
-):
-    query = (catalog_number or "").strip()
-    title = (album_title or "").strip()
-    artist_name = (artist or "").strip()
-    if not query and not title and not artist_name:
-        return {"candidates": mock_discogs_candidates(catalog_number), "source": "mock"}
+async def search_discogs(catalog_number: str | None = None, album_title: str | None = None, artist: str | None = None):
+    query = (catalog_number or album_title or artist or "").strip()
+    if not query:
+        return {"source": "mock", "candidates": []}
+    try:
+        params = {"type": "release", "per_page": "8"}
+        if catalog_number:
+            params["catno"] = catalog_number
+        else:
+            params["q"] = " ".join(part for part in [artist, album_title] if part)
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get("https://api.discogs.com/database/search", params=params)
+            response.raise_for_status()
+            payload = response.json()
+        candidates = [discogs_candidate(item, query) for item in payload.get("results", [])[:5]]
+        return {"source": "discogs", "candidates": candidates}
+    except Exception as exc:
+        logger.warning("Discogs lookup failed: %s", exc)
+        return {"source": "mock", "candidates": []}
 
-    token = os.getenv("DISCOGS_TOKEN")
-    headers = {"User-Agent": "Vinyl-Check/0.1"}
+
+def normalize_address_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def address_candidate_id(road_address: str, jibun_address: str, zip_code: str) -> str:
+    return stable_id("addr", "|".join([road_address, jibun_address, zip_code]))
+
+
+def juso_candidate(item: dict[str, Any]) -> dict[str, str]:
+    road_address = normalize_address_text(item.get("roadAddr") or item.get("roadAddrPart1"))
+    jibun_address = normalize_address_text(item.get("jibunAddr"))
+    zip_code = normalize_address_text(item.get("zipNo"))
+    sido = normalize_address_text(item.get("siNm"))
+    sigungu = normalize_address_text(item.get("sggNm"))
+    detail = normalize_address_text(item.get("bdNm") or item.get("detBdNmList") or item.get("emdNm"))
+    return {
+        "id": address_candidate_id(road_address, jibun_address, zip_code),
+        "roadAddress": road_address,
+        "jibunAddress": jibun_address,
+        "zipCode": zip_code,
+        "sido": sido,
+        "sigungu": sigungu,
+        "detail": detail,
+    }
+
+
+def local_address_candidates(keyword: str, count: int) -> list[dict[str, str]]:
+    tokens = [token.lower() for token in keyword.split() if len(token.strip()) >= 2]
+    if not tokens:
+        return []
+    candidates = []
+    for item in ADDRESS_FALLBACKS:
+        text = " ".join(str(value).lower() for value in item.values())
+        if all(token in text for token in tokens):
+            candidates.append(item)
+    if not candidates:
+        for item in ADDRESS_FALLBACKS:
+            text = " ".join(str(value).lower() for value in item.values())
+            if any(token in text for token in tokens):
+                candidates.append(item)
+    return [
+        {
+            "id": address_candidate_id(item["roadAddress"], item["jibunAddress"], item["zipCode"]),
+            **item,
+        }
+        for item in candidates[:count]
+    ]
+
+
+def juso_api_key() -> str:
+    for key in ("JUSO_API_KEY", "JUSO_CONFIRM_KEY", "ROAD_ADDRESS_API_KEY", "ADDRESS_API_KEY"):
+        value = os.getenv(key, "").strip().strip('"').strip("'")
+        if value:
+            return value
+    return ""
+
+
+@app.get("/address/search")
+async def search_address(keyword: str, count: int = 8, page: int = 1):
+    query = keyword.strip()
+    safe_count = max(1, min(count, 20))
+    safe_page = max(1, page)
+    if len(query) < 2:
+        return {"source": "local", "candidates": [], "message": "주소 검색어를 2글자 이상 입력해 주세요."}
+
+    key = juso_api_key()
+    if key:
+        try:
+            params = {
+                "confmKey": key,
+                "currentPage": str(safe_page),
+                "countPerPage": str(safe_count),
+                "keyword": query,
+                "resultType": "json",
+            }
+            async with httpx.AsyncClient(timeout=7) as client:
+                response = await client.get("https://business.juso.go.kr/addrlink/addrLinkApi.do", params=params)
+                response.raise_for_status()
+                payload = response.json()
+            results = payload.get("results", {})
+            common = results.get("common", {})
+            if str(common.get("errorCode")) == "0":
+                candidates = [juso_candidate(item) for item in results.get("juso", [])]
+                return {
+                    "source": "juso",
+                    "candidates": candidates,
+                    "totalCount": int(common.get("totalCount") or len(candidates)),
+                    "message": "도로명주소 API 검색 결과입니다.",
+                }
+            logger.warning("Juso address lookup failed: %s", common.get("errorMessage"))
+        except Exception as exc:
+            logger.warning("Juso address lookup failed: %s", exc)
+
+    candidates = local_address_candidates(query, safe_count)
+    return {
+        "source": "local",
+        "candidates": candidates,
+        "totalCount": len(candidates),
+        "message": "JUSO_API_KEY가 없어 기본 주소 후보를 표시합니다. 실제 검색은 backend/.env에 JUSO_API_KEY를 넣으면 켜집니다.",
+    }
+
+
+def discogs_headers() -> dict[str, str]:
+    headers = {"User-Agent": "VinylCheck/0.1 +https://vinyl-check.local"}
+    token = os.getenv("DISCOGS_TOKEN", "").strip().strip('"').strip("'")
     if token:
         headers["Authorization"] = f"Discogs token={token}"
+    return headers
+
+
+def parse_money(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).replace(",", "").strip()
+    cleaned = "".join(char for char in text if char.isdigit() or char in ".-")
+    try:
+        return float(cleaned) if cleaned else None
+    except ValueError:
+        return None
+
+
+def currency_to_krw(value: float, currency: str | None) -> int:
+    rates = {
+        "KRW": 1.0,
+        "USD": float(os.getenv("USD_KRW_RATE", "1350")),
+        "EUR": float(os.getenv("EUR_KRW_RATE", "1460")),
+        "GBP": float(os.getenv("GBP_KRW_RATE", "1710")),
+        "JPY": float(os.getenv("JPY_KRW_RATE", "9.0")),
+    }
+    return int(round(value * rates.get((currency or "USD").upper(), rates["USD"])))
+
+
+def price_condition(surface_score: int | None, audio_score: int | None, scratch_risk: str | None, playback_risk: str | None) -> str:
+    surface = int(surface_score or 0)
+    audio = int(audio_score or 0)
+    worst_risk = "high" if "high" in {scratch_risk, playback_risk} else "medium" if "medium" in {scratch_risk, playback_risk} else "low"
+    combined = int(round((surface or 72) * 0.45 + (audio or 72) * 0.55))
+    if combined >= 88 and worst_risk == "low":
+        return "Near Mint (NM or M-)"
+    if combined >= 80 and worst_risk != "high":
+        return "Very Good Plus (VG+)"
+    if combined >= 68:
+        return "Very Good (VG)"
+    if combined >= 55:
+        return "Good Plus (G+)"
+    return "Good (G)"
+
+
+def quality_multiplier(surface_score: int | None, audio_score: int | None, scratch_risk: str | None, playback_risk: str | None) -> float:
+    surface = int(surface_score or 72)
+    audio = int(audio_score or 72)
+    multiplier = 1.0
+    if surface >= 88 and audio >= 86:
+        multiplier += 0.05
+    if surface < 70:
+        multiplier -= 0.08
+    if audio < 72:
+        multiplier -= 0.08
+    if scratch_risk == "high" or playback_risk == "high":
+        multiplier -= 0.12
+    elif scratch_risk == "medium" or playback_risk == "medium":
+        multiplier -= 0.05
+    return max(0.62, min(1.08, multiplier))
+
+
+async def find_discogs_release_id(catalog_number: str, title: str, artist: str) -> tuple[int | None, str]:
+    params = {"type": "release", "per_page": "3"}
+    if catalog_number:
+        params["catno"] = catalog_number
+    else:
+        params["q"] = " ".join(part for part in [artist, title] if part)
+    if not params.get("catno") and not params.get("q"):
+        return None, ""
+    async with httpx.AsyncClient(timeout=8) as client:
+        response = await client.get("https://api.discogs.com/database/search", params=params, headers=discogs_headers())
+        response.raise_for_status()
+        results = response.json().get("results", [])
+    if not results:
+        return None, ""
+    first = results[0]
+    return int(first.get("id") or 0), str(first.get("title") or "")
+
+
+def suggestion_entry_to_krw(entry: Any) -> tuple[int | None, str]:
+    if isinstance(entry, dict):
+        amount = parse_money(entry.get("value") or entry.get("price") or entry.get("amount"))
+        currency = str(entry.get("currency") or "USD")
+    else:
+        amount = parse_money(entry)
+        currency = "USD"
+    if amount is None:
+        return None, currency
+    return currency_to_krw(amount, currency), currency
+
+
+@app.get("/pricing/recommendation")
+async def recommend_price(
+    catalog_number: str | None = None,
+    title: str | None = None,
+    artist: str | None = None,
+    release_id: int | None = None,
+    surface_score: int | None = None,
+    audio_score: int | None = None,
+    scratch_risk: str | None = None,
+    playback_risk: str | None = None,
+):
+    catalog = (catalog_number or "").strip()
+    release_title = ""
+    source = "local"
+    condition = price_condition(surface_score, audio_score, scratch_risk, playback_risk)
+    suggested_krw: int | None = None
+    marketplace_low_krw: int | None = None
+    num_for_sale: int | None = None
+    currency = "KRW"
 
     try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            results = await fetch_discogs_results(client, query, headers, title, artist_name)
-    except httpx.HTTPError:
-        return {"candidates": mock_discogs_candidates(catalog_number), "source": "mock"}
+        if not release_id:
+            release_id, release_title = await find_discogs_release_id(catalog, (title or "").strip(), (artist or "").strip())
+        if release_id:
+            source = "discogs"
+            async with httpx.AsyncClient(timeout=9) as client:
+                suggestions_response = await client.get(
+                    f"https://api.discogs.com/marketplace/price_suggestions/{release_id}",
+                    headers=discogs_headers(),
+                )
+                if suggestions_response.status_code == 200:
+                    suggestions = suggestions_response.json()
+                    entry = suggestions.get(condition) or suggestions.get("Very Good (VG)") or next(iter(suggestions.values()), None)
+                    suggested_krw, currency = suggestion_entry_to_krw(entry)
+                stats_response = await client.get(
+                    f"https://api.discogs.com/marketplace/stats/{release_id}",
+                    headers=discogs_headers(),
+                )
+                if stats_response.status_code == 200:
+                    stats = stats_response.json()
+                    lowest = stats.get("lowest_price")
+                    if isinstance(lowest, dict):
+                        amount = parse_money(lowest.get("value"))
+                        marketplace_low_krw = currency_to_krw(amount, str(lowest.get("currency") or currency)) if amount is not None else None
+                    else:
+                        amount = parse_money(lowest)
+                        marketplace_low_krw = currency_to_krw(amount, currency) if amount is not None else None
+                    num_for_sale = int(stats.get("num_for_sale") or 0)
+    except Exception as exc:
+        logger.warning("Discogs price recommendation failed: %s", exc)
 
-    fallback_catalog = query or " ".join(part for part in [artist_name, title] if part)
-    candidates = [discogs_result_to_candidate(item, fallback_catalog) for item in results[:5]]
+    if suggested_krw and marketplace_low_krw:
+        base_price = int(round(suggested_krw * 0.72 + marketplace_low_krw * 0.28))
+    elif suggested_krw:
+        base_price = suggested_krw
+    elif marketplace_low_krw:
+        base_price = marketplace_low_krw
+    else:
+        normalized = catalog.lower()
+        match = next((item for item in MOCK_LISTINGS if normalized and item["catalog_number"].lower() == normalized), None)
+        base_price = int(match["price"] if match else 275000)
+        source = "local"
+
+    adjusted_price = int(round(base_price * quality_multiplier(surface_score, audio_score, scratch_risk, playback_risk) / 1000) * 1000)
+    adjusted_price = max(1000, adjusted_price)
     return {
-        "candidates": candidates or mock_discogs_candidates(catalog_number),
-        "source": "discogs" if candidates else "mock",
+        "recommended_price": adjusted_price,
+        "price_range": {
+            "min": int(round(adjusted_price * 0.9 / 1000) * 1000),
+            "max": int(round(adjusted_price * 1.12 / 1000) * 1000),
+        },
+        "source": source,
+        "condition": condition,
+        "release_id": release_id,
+        "release_title": release_title,
+        "currency": "KRW",
+        "discogs": {
+            "suggestedPrice": suggested_krw,
+            "marketplaceLow": marketplace_low_krw,
+            "numForSale": num_for_sale,
+            "inputCurrency": currency,
+        },
+        "reason": f"Discogs 거래/판매 데이터와 표면 {surface_score or '-'}점, 음질 {audio_score or '-'}점, 위험도({scratch_risk or '-'}, {playback_risk or '-'})를 함께 반영했습니다."
+        if source == "discogs"
+        else "Discogs 가격 데이터를 가져오지 못해 로컬 시세와 상품 품질 점수를 기준으로 계산했습니다.",
     }
 
 
 @app.get("/discogs/track-recommendations")
-async def discogs_track_recommendations(catalog_number: str | None = None):
-    query = (catalog_number or "").strip()
-    if not query:
-        return mock_track_recommendations(catalog_number)
-
-    token = os.getenv("DISCOGS_TOKEN")
-    headers = {"User-Agent": "VinylCheck/0.1"}
-    if token:
-        headers["Authorization"] = f"Discogs token={token}"
-
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            results = await fetch_discogs_results(client, query, headers)
-            release = next((item for item in results if item.get("type") in (None, "release")), results[0] if results else None)
-            release_id = release.get("id") if release else None
-            if not release_id:
-                return mock_track_recommendations(catalog_number)
-            response = await client.get(f"https://api.discogs.com/releases/{release_id}", headers=headers)
-            response.raise_for_status()
-            release_data = response.json()
-    except (httpx.HTTPError, IndexError, KeyError):
-        return mock_track_recommendations(catalog_number)
-
-    tracklist = release_data.get("tracklist") or []
-    recommendations = recommend_audio_tracks(tracklist)
+async def track_recommendations(catalog_number: str):
+    catalog = catalog_number.strip()
+    tracks = [
+        {"position": "A1", "title": "첫 트랙 도입부", "duration": "", "durationSeconds": 180},
+        {"position": "A2", "title": "중간 안정 구간", "duration": "", "durationSeconds": 220},
+    ]
     return {
-        **recommendations,
-        "source": "discogs",
-        "releaseTitle": release_data.get("title") or "",
-        "catalogNumber": query,
+        "source": "mock",
+        "releaseTitle": "Discogs 트랙리스트 확인 필요",
+        "catalogNumber": catalog,
+        "tracks": tracks,
+        "good": {**tracks[1], "label": "good", "suggestedStart": "중간부", "recordSeconds": 20, "guide": "음악이 안정적으로 이어지는 20초를 녹음하세요."},
+        "noisy": {**tracks[0], "label": "noisy", "suggestedStart": "시작부 0~15초", "recordSeconds": 15, "guide": "무음부, 도입부, 조용한 부분처럼 상태가 안 좋은 구간을 확인하세요."},
     }
 
 
-@app.post("/offers")
-async def create_offer(payload: OfferCreate):
-    return {"id": f"offer-{int(datetime.now().timestamp())}", "status": "pending", **payload.model_dump()}
-
-
-@app.post("/transactions/{transaction_id}/completion")
-async def update_completion(transaction_id: str, payload: CompletionUpdate):
-    return {
-        "transaction_id": transaction_id,
-        "status": "completed" if payload.buyer_checked and payload.seller_checked else "selling",
-        **payload.model_dump(),
-    }
+@app.post("/uploads/images")
+async def upload_image(file: Annotated[UploadFile, File()]):
+    content = await file.read()
+    encoded = base64.b64encode(content).decode("ascii")
+    return {"url": f"data:{file.content_type or 'image/jpeg'};base64,{encoded}"}

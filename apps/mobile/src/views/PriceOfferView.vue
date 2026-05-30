@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white flex flex-col">
     <header class="px-4 py-4 flex items-center border-b">
-      <button class="p-2" @click="router.back()">
+      <button class="p-2" @click="router.push(`/app/album/${album.id}`)">
         <ArrowLeft :size="24" />
       </button>
       <h1 class="ml-3 text-lg">가격 제안</h1>
@@ -58,23 +58,32 @@
 
     <footer class="p-4 border-t bg-white">
       <button class="w-full py-4 bg-blue-600 text-white rounded-lg disabled:bg-gray-300" :disabled="!canSubmit" @click="submit">
-        가격 제안 보내기
+        {{ isSubmitting ? '보내는 중' : '가격 제안 보내기' }}
       </button>
     </footer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft } from 'lucide-vue-next';
-import { mockAlbums } from '../data/mockData';
+import { fallbackAlbum } from '../data/albumLookup';
+import { fetchApi } from '../data/api';
+import { makeOneToOneChatId } from '../data/chatClient';
+import { useAppStore } from '../stores/appStore';
 import VinylCover from '../components/VinylCover.vue';
 
 const route = useRoute();
 const router = useRouter();
-const album = computed(() => mockAlbums.find(item => item.id === route.params.albumId) || mockAlbums[0]);
+const store = useAppStore();
+const album = computed(() => fallbackAlbum(store, route.params.albumId));
 const offerPrice = ref('');
+const isSubmitting = ref(false);
+
+onMounted(() => {
+  void store.loadListingsFromServer();
+});
 
 const presets = computed(() => [
   { label: '판매가', value: album.value.price },
@@ -99,11 +108,40 @@ const offerState = computed(() => {
   return { title: '수락 가능성이 높습니다', description: '판매가 이상으로 제안합니다.', className: 'bg-green-50 border-green-200 text-green-900' };
 });
 
-const canSubmit = computed(() => offerNumber.value > 0);
+const canSubmit = computed(() => offerNumber.value > 0 && !isSubmitting.value);
 
-const submit = () => {
+const submit = async () => {
   if (!canSubmit.value) return;
-  alert(`가격 제안 ${offerNumber.value.toLocaleString()}원을 보냈습니다.`);
-  router.back();
+  isSubmitting.value = true;
+  try {
+    const response = await fetchApi('/offers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        listingId: album.value.id,
+        buyerId: store.user.id,
+        buyerName: store.user.username,
+        sellerId: album.value.seller.id,
+        sellerName: album.value.seller.name,
+        offerPrice: offerNumber.value,
+      }),
+    });
+    const payload = await response.json().catch(() => ({})) as { detail?: string; offer?: { chatId?: string } };
+    if (!response.ok) throw new Error(payload.detail || '가격 제안 전송에 실패했습니다.');
+    alert(`가격 제안 ${offerNumber.value.toLocaleString()}원을 보냈습니다.`);
+    const chatId = payload.offer?.chatId || makeOneToOneChatId(album.value.id, store.user.id, album.value.seller.id);
+    router.push({
+      path: `/transaction/chat/${chatId}`,
+      query: {
+        listingId: album.value.id,
+        recipientId: album.value.seller.id,
+        recipientName: album.value.seller.name,
+      },
+    });
+  } catch (error) {
+    alert(error instanceof Error ? error.message : '가격 제안 전송에 실패했습니다.');
+  } finally {
+    isSubmitting.value = false;
+  }
 };
 </script>

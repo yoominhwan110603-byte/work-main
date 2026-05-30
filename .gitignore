@@ -16,6 +16,7 @@ apps/mobile/android/captures/
 *.err.log
 __pycache__/
 *.py[cod]
+backend/data/
 .DS_Store
 Thumbs.db
 .env
@@ -24,3 +25,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+.venv/
+venv/
+__pycache__/
+*.pyc

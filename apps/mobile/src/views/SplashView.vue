@@ -9,8 +9,8 @@
       </p>
     </div>
     <div class="w-full max-w-sm mb-12 space-y-3">
-      <button class="w-full bg-white text-blue-600 py-4 rounded-xl" @click="router.push('/auth/signup')">시작하기</button>
-      <button class="w-full text-white py-2" @click="router.push('/auth/login')">이미 계정이 있나요? 로그인</button>
+      <button class="w-full bg-white text-blue-600 py-4 rounded-xl" @click="router.push('/auth/login')">로그인</button>
+      <button class="w-full text-white py-2" @click="router.push('/auth/signup')">계정이 없나요? 회원가입</button>
     </div>
   </div>
 </template>

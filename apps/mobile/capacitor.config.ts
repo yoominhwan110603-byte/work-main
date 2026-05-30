@@ -5,6 +5,17 @@ const config: CapacitorConfig = {
   appName: 'Vinyl-Check',
   webDir: 'dist',
   plugins: {
+    SocialLogin: {
+      providers: {
+        google: true,
+        facebook: false,
+        apple: false,
+        twitter: false,
+      },
+    },
+    CapacitorHttp: {
+      enabled: true,
+    },
     Camera: {
       permissions: ['camera', 'photos'],
     },

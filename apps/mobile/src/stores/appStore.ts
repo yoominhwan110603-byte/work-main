@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
-import { mockAlbums, type Album } from '../data/mockData';
+import type { Album } from '../data/mockData';
+import { fetchApi, getApiBaseUrl } from '../data/api';
 
 export interface User {
   id: string;
@@ -11,25 +12,36 @@ export interface User {
   emailVerified?: boolean;
 }
 
-export const DRAFT_KEY = 'vinyl-check-listing-draft';
-const USER_KEY = 'vinyl-check-user';
-const SETTINGS_KEY = 'vinyl-check-settings';
-const PENDING_VERIFICATION_KEY = 'vinyl-check-pending-verification';
-const MOCK_CODE = '123456';
-const DEV_LAN_API_BASE_URL = 'http://172.30.14.95:8000';
-
-function getApiBaseUrl() {
-  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
-  if (typeof window === 'undefined') return 'http://localhost:8000';
-
-  const { protocol, hostname } = window.location;
-  const localHostnames = new Set(['localhost', '127.0.0.1', '::1']);
-  if (localHostnames.has(hostname)) return DEV_LAN_API_BASE_URL;
-
-  return `${protocol.startsWith('http') ? protocol : 'http:'}//${hostname}:8000`;
+export interface SellerReview {
+  id: string;
+  revieweeId: string;
+  reviewerId: string;
+  reviewerName: string;
+  rating: number;
+  comment: string;
+  tags: string[];
+  albumId?: string;
+  albumTitle?: string;
+  transactionId?: string;
+  createdAt: string;
 }
 
-const API_BASE_URL = getApiBaseUrl();
+export interface ReviewSummary {
+  average: number;
+  count: number;
+}
+
+export const DRAFT_KEY = 'vinyl-check-listing-draft';
+const DRAFTS_KEY = 'vinyl-check-listing-drafts';
+const ACTIVE_DRAFT_ID_KEY = 'vinyl-check-active-listing-draft-id';
+const USER_KEY = 'vinyl-check-user';
+const AUTH_TOKEN_KEY = 'vinyl-check-auth-token';
+const SETTINGS_KEY = 'vinyl-check-settings';
+const PENDING_VERIFICATION_KEY = 'vinyl-check-pending-verification';
+const FAVORITES_KEY = 'vinyl-check-favorites';
+const MOCK_CODE = '123456';
+const currentApiBaseUrl = () => getApiBaseUrl();
+const AUTH_TIMEOUT_MS = 8000;
 
 export type ThemeMode = 'light' | 'dark' | 'system';
 
@@ -63,17 +75,6 @@ interface PendingVerification {
   code: string;
 }
 
-interface ProfileDraftResponse {
-  persisted: boolean;
-  profile: (Partial<User> & { id: string; updatedAt?: string | null }) | null;
-}
-
-interface ListingDraftResponse {
-  persisted: boolean;
-  draft: Record<string, unknown> | null;
-  updatedAt?: string | null;
-}
-
 interface ListingCreatePayload {
   title: string;
   artist?: string;
@@ -83,32 +84,38 @@ interface ListingCreatePayload {
   tags?: string[];
   user_id?: string;
   images?: string[];
+  cover_image_data_url?: string;
+  record_image_data_url?: string;
+  record_video_data_url?: string;
   genre?: string;
   year?: number;
   location?: string;
   audio_grade?: string;
   audio_score?: number;
-  jacket_grade?: string;
-  jacket_score?: number;
+  audio_samples?: {
+    good?: { name: string; durationSeconds: number; dataUrl?: string; startSeconds?: number; endSeconds?: number };
+    noisy?: { name: string; durationSeconds: number; dataUrl?: string; startSeconds?: number; endSeconds?: number };
+  };
   is_rare?: boolean;
   is_first_press?: boolean;
   analysis_report?: Record<string, unknown>;
 }
 
-interface ListingCreateResponse {
-  status: string;
-  persisted: boolean;
-  listing: Album;
+export interface ListingDraftEntry {
+  id: string;
+  title: string;
+  draft: Record<string, unknown>;
+  updatedAt: string;
 }
 
 const defaultUser: User = {
-  id: 'seller1',
-  username: '재즈매니아',
-  email: 'user@example.com',
-  rating: 4.9,
-  transactionCount: 127,
-  genres: ['재즈'],
-  emailVerified: true,
+  id: 'guest',
+  username: '게스트',
+  email: 'guest@vinyl-check.local',
+  rating: 0,
+  transactionCount: 0,
+  genres: [],
+  emailVerified: false,
 };
 
 const defaultSettings: AppSettings = {
@@ -124,7 +131,7 @@ const defaultSettings: AppSettings = {
     nightQuiet: false,
   },
   trade: {
-    defaultLocation: '서울 강남구',
+    defaultLocation: '서울',
     allowOffers: true,
     minimumOfferRate: 80,
   },
@@ -139,6 +146,49 @@ function readJson<T>(key: string, fallback: T): T {
   }
 }
 
+function readStoredAuth<T>(key: string, fallback: T): T {
+  const localValue = localStorage.getItem(key);
+  const sessionValue = sessionStorage.getItem(key);
+  if (!localValue && sessionValue) {
+    try {
+      return JSON.parse(sessionValue) || fallback;
+    } catch {
+      sessionStorage.removeItem(key);
+      return fallback;
+    }
+  }
+  return readJson<T>(key, fallback);
+}
+
+function readStoredToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+async function authFetch(path: string, body: Record<string, unknown>, timeoutMs = AUTH_TIMEOUT_MS) {
+  return fetchApi(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, timeoutMs);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(`${currentApiBaseUrl()}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && (error as Error).name === 'AbortError') {
+      throw new Error('서버 응답이 늦습니다. 잠시 후 다시 시도해 주세요.');
+    }
+    throw error instanceof Error ? error : new Error('요청 처리에 실패했습니다.');
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 function sanitizeSettings(settings: Partial<AppSettings>): AppSettings {
   return {
     ...defaultSettings,
@@ -148,20 +198,18 @@ function sanitizeSettings(settings: Partial<AppSettings>): AppSettings {
   };
 }
 
-function sanitizeUser(user: User): User {
-  const safeUser = user as Partial<User>;
-  const safeGenres = Array.isArray(safeUser.genres)
-    ? safeUser.genres.filter((genre): genre is string => typeof genre === 'string' && genre.trim().length > 0)
-    : defaultUser.genres;
+function sanitizeUser(user: Partial<User>): User {
+  const genres = Array.isArray(user.genres) ? user.genres.filter(Boolean).slice(0, 5) : [];
   return {
     ...defaultUser,
-    id: safeUser.id || defaultUser.id,
-    username: safeUser.username || defaultUser.username,
-    email: safeUser.email || defaultUser.email,
-    rating: safeUser.rating ?? defaultUser.rating,
-    transactionCount: safeUser.transactionCount ?? defaultUser.transactionCount,
-    genres: safeGenres,
-    emailVerified: safeUser.emailVerified ?? true,
+    ...user,
+    id: user.id || defaultUser.id,
+    username: user.username || defaultUser.username,
+    email: user.email || defaultUser.email,
+    rating: Number(user.rating ?? defaultUser.rating),
+    transactionCount: Number(user.transactionCount ?? defaultUser.transactionCount),
+    genres,
+    emailVerified: user.emailVerified ?? false,
   };
 }
 
@@ -175,42 +223,133 @@ function isValidEmail(email: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
 
+async function readAuthResponse(response: Response) {
+  const payload = await response.json() as { token?: string; user?: User; detail?: string };
+  if (!response.ok || !payload.user) throw new Error(payload.detail || '로그인에 실패했습니다.');
+  return payload;
+}
+
 export const useAppStore = defineStore('app', {
   state: () => ({
-    user: sanitizeUser(readJson<User>(USER_KEY, defaultUser)),
-    favorites: [] as string[],
-    listings: mockAlbums as Album[],
+    user: sanitizeUser(readStoredAuth<User>(USER_KEY, defaultUser)),
+    token: readStoredToken(),
+    favorites: readJson<string[]>(FAVORITES_KEY, []),
+    listings: [] as Album[],
     settings: sanitizeSettings(readJson<Partial<AppSettings>>(SETTINGS_KEY, defaultSettings)),
     pendingVerification: readJson<PendingVerification | null>(PENDING_VERIFICATION_KEY, null),
   }),
+  getters: {
+    isLoggedIn: state => Boolean(state.token && state.user.id !== 'guest'),
+  },
   actions: {
-    login(user: User) {
+    persistAuth(user: User, token = 'local-dev-token', rememberMe = true) {
       this.user = sanitizeUser(user);
-      localStorage.setItem(USER_KEY, JSON.stringify(this.user));
+      this.token = token;
+      const primaryStorage = rememberMe ? localStorage : sessionStorage;
+      const secondaryStorage = rememberMe ? sessionStorage : localStorage;
+      secondaryStorage.removeItem(USER_KEY);
+      secondaryStorage.removeItem(AUTH_TOKEN_KEY);
+      primaryStorage.setItem(USER_KEY, JSON.stringify(this.user));
+      primaryStorage.setItem(AUTH_TOKEN_KEY, token);
+    },
+    login(user: User) {
+      this.persistAuth(user);
+    },
+    async loginWithPassword(emailOrUsername: string, password: string, rememberMe = true) {
+      const response = await authFetch('/auth/login', { username: emailOrUsername, password, rememberMe });
+      const payload = await readAuthResponse(response);
+      this.persistAuth(payload.user!, payload.token, rememberMe);
+      return this.user;
+    },
+    async checkSignupAvailability(username: string, email = '') {
+      const response = await fetchApi('/auth/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email }),
+      }, 6000);
+      const payload = await response.json().catch(() => ({})) as { usernameTaken?: boolean; emailTaken?: boolean; available?: boolean; detail?: string };
+      if (!response.ok) throw new Error(payload.detail || '중복 확인에 실패했습니다.');
+      return {
+        usernameTaken: Boolean(payload.usernameTaken),
+        emailTaken: Boolean(payload.emailTaken),
+        available: Boolean(payload.available),
+      };
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 6000);
+      try {
+        const response = await fetch(`${currentApiBaseUrl()}/auth/check`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, email }),
+          signal: controller.signal,
+        });
+        const payload = await response.json().catch(() => ({})) as { usernameTaken?: boolean; emailTaken?: boolean; available?: boolean; detail?: string };
+        if (!response.ok) throw new Error(payload.detail || '중복 확인에 실패했습니다.');
+        return {
+          usernameTaken: Boolean(payload.usernameTaken),
+          emailTaken: Boolean(payload.emailTaken),
+          available: Boolean(payload.available),
+        };
+      } catch (error) {
+        if (error instanceof DOMException && (error as Error).name === 'AbortError') {
+          throw new Error('서버 응답이 늦습니다. 잠시 후 다시 시도해 주세요.');
+        }
+        throw error instanceof Error ? error : new Error('중복 확인에 실패했습니다.');
+      } finally {
+        window.clearTimeout(timeoutId);
+      }
+    },
+    async requestEmailVerification(email: string) {
+      const response = await authFetch('/auth/email-verification/request', { email });
+      const data = await response.json().catch(() => ({})) as { message?: string; devVerificationCode?: string; sent?: boolean; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '이메일 인증번호 발송에 실패했습니다.');
+      return data;
+    },
+    async confirmEmailVerification(email: string, code: string) {
+      const response = await authFetch('/auth/email-verification/confirm', { email, code });
+      const data = await response.json().catch(() => ({})) as { message?: string; verificationToken?: string; detail?: string };
+      if (!response.ok || !data.verificationToken) throw new Error(data.detail || '이메일 인증에 실패했습니다.');
+      return data;
+    },
+    async signupWithPassword(username: string, email: string, password: string, genres: string[] = [], emailVerificationToken = '') {
+      const response = await authFetch('/auth/signup', { username, email, password, genres, emailVerificationToken });
+      const payload = await readAuthResponse(response);
+      this.persistAuth(payload.user!, payload.token, true);
+      return this.user;
+    },
+    async loginWithGoogle(profile?: { email?: string; name?: string; credential?: string }, rememberMe = true) {
+      const response = await authFetch('/auth/google', profile || {});
+      const payload = await readAuthResponse(response);
+      this.persistAuth(payload.user!, payload.token, rememberMe);
+      return this.user;
     },
     logout() {
       this.user = defaultUser;
+      this.token = '';
       localStorage.removeItem(USER_KEY);
+      localStorage.removeItem(AUTH_TOKEN_KEY);
+      sessionStorage.removeItem(USER_KEY);
+      sessionStorage.removeItem(AUTH_TOKEN_KEY);
     },
     loadPersistedPreferences() {
-      this.user = sanitizeUser(readJson<User>(USER_KEY, this.user || defaultUser));
+      this.user = sanitizeUser(readStoredAuth<User>(USER_KEY, this.user || defaultUser));
+      this.token = readStoredToken();
       this.settings = sanitizeSettings(readJson<Partial<AppSettings>>(SETTINGS_KEY, this.settings));
       this.pendingVerification = readJson<PendingVerification | null>(PENDING_VERIFICATION_KEY, null);
       applyTheme(this.settings.theme);
     },
     updateUserProfile(updates: Partial<User>) {
       this.user = sanitizeUser({ ...this.user, ...updates });
-      localStorage.setItem(USER_KEY, JSON.stringify(this.user));
+      const storage = sessionStorage.getItem(AUTH_TOKEN_KEY) ? sessionStorage : localStorage;
+      storage.setItem(USER_KEY, JSON.stringify(this.user));
     },
     async loadUserProfileFromServer() {
       try {
-        const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(this.user.id)}/profile-draft`);
+        if (!this.isLoggedIn) return { ok: false, persisted: false };
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/profile-draft`);
         if (!response.ok) return { ok: false, persisted: false };
-
-        const data = await response.json() as ProfileDraftResponse;
-        if (data.persisted && data.profile) {
-          this.updateUserProfile(data.profile);
-        }
+        const data = await response.json() as { persisted: boolean; profile: Partial<User> | null };
+        if (data.persisted && data.profile) this.updateUserProfile(data.profile);
         return { ok: true, persisted: data.persisted };
       } catch {
         return { ok: false, persisted: false };
@@ -218,9 +357,8 @@ export const useAppStore = defineStore('app', {
     },
     async saveUserProfileToServer(updates: Partial<User>) {
       this.updateUserProfile(updates);
-
       try {
-        const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(this.user.id)}/profile-draft`, {
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/profile-draft`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -232,43 +370,25 @@ export const useAppStore = defineStore('app', {
             emailVerified: this.user.emailVerified ?? true,
           }),
         });
-        if (!response.ok) {
-          return { ok: false, persisted: false, message: '로컬에만 임시 저장되었습니다. 서버 응답을 확인해 주세요.' };
-        }
-
-        const data = await response.json() as ProfileDraftResponse;
+        if (!response.ok) return { ok: false, persisted: false, message: '로컬에만 저장했습니다. 서버 연결을 확인해 주세요.' };
+        const data = await response.json() as { persisted: boolean; profile?: Partial<User> };
         if (data.profile) this.updateUserProfile(data.profile);
-        return {
-          ok: true,
-          persisted: data.persisted,
-          message: data.persisted ? 'DB에 임시 저장되었습니다.' : '로컬에만 임시 저장되었습니다. DB 연결을 확인해 주세요.',
-        };
+        return { ok: true, persisted: data.persisted, message: data.persisted ? '프로필을 서버에 저장했습니다.' : '로컬에만 저장했습니다.' };
       } catch {
-        return { ok: false, persisted: false, message: '로컬에만 임시 저장되었습니다. 백엔드 서버 연결을 확인해 주세요.' };
+        return { ok: false, persisted: false, message: '서버 연결 실패로 로컬에만 저장했습니다.' };
       }
     },
     beginEmailChange(email: string) {
       const nextEmail = email.trim();
-      if (!isValidEmail(nextEmail)) {
-        return { ok: false, message: '올바른 이메일 형식이 아닙니다.' };
-      }
-      if (nextEmail.toLowerCase() === this.user.email.toLowerCase()) {
-        return { ok: false, message: '현재 사용 중인 이메일과 같습니다.' };
-      }
-      if (nextEmail.toLowerCase() === 'used@example.com') {
-        return { ok: false, message: '이미 사용 중인 이메일입니다.' };
-      }
+      if (!isValidEmail(nextEmail)) return { ok: false, message: '올바른 이메일 형식이 아닙니다.' };
+      if (nextEmail.toLowerCase() === this.user.email.toLowerCase()) return { ok: false, message: '현재 사용 중인 이메일과 같습니다.' };
       this.pendingVerification = { type: 'email', value: nextEmail, code: MOCK_CODE };
       localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify(this.pendingVerification));
       return { ok: true, message: '인증 코드가 발송되었습니다. 개발용 인증번호는 123456입니다.' };
     },
     confirmEmailChange(code: string) {
-      if (!this.pendingVerification) {
-        return { ok: false, message: '진행 중인 이메일 인증이 없습니다.' };
-      }
-      if (code !== this.pendingVerification.code) {
-        return { ok: false, message: '인증번호가 일치하지 않습니다.' };
-      }
+      if (!this.pendingVerification) return { ok: false, message: '진행 중인 이메일 인증이 없습니다.' };
+      if (code !== this.pendingVerification.code) return { ok: false, message: '인증번호가 일치하지 않습니다.' };
       this.updateUserProfile({ email: this.pendingVerification.value, emailVerified: true });
       this.pendingVerification = null;
       localStorage.removeItem(PENDING_VERIFICATION_KEY);
@@ -290,18 +410,18 @@ export const useAppStore = defineStore('app', {
       applyTheme(this.settings.theme);
     },
     toggleFavorite(albumId: string) {
-      this.favorites = this.favorites.includes(albumId)
-        ? this.favorites.filter(id => id !== albumId)
-        : [...this.favorites, albumId];
+      const normalizedId = String(albumId);
+      this.favorites = this.favorites.includes(normalizedId)
+        ? this.favorites.filter(id => id !== normalizedId)
+        : [...this.favorites, normalizedId];
+      localStorage.setItem(FAVORITES_KEY, JSON.stringify(this.favorites));
     },
     async loadListingsFromServer() {
       try {
-        const response = await fetch(`${API_BASE_URL}/listings`);
+        const response = await fetchApi('/listings');
         if (!response.ok) return { ok: false, persisted: false };
         const listings = await response.json() as Album[];
-        if (Array.isArray(listings) && listings.length > 0) {
-          this.listings = listings;
-        }
+        if (Array.isArray(listings)) this.listings = listings.filter(album => album.status !== 'hidden');
         return { ok: true, persisted: true };
       } catch {
         return { ok: false, persisted: false };
@@ -309,68 +429,145 @@ export const useAppStore = defineStore('app', {
     },
     async publishListing(payload: ListingCreatePayload) {
       try {
-        const response = await fetch(`${API_BASE_URL}/listings`, {
+        const response = await fetchApi('/listings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...payload, user_id: payload.user_id || this.user.id }),
         });
-        if (!response.ok) {
-          return { ok: false, message: '게시글 저장에 실패했습니다. 서버 응답을 확인해 주세요.' };
-        }
-
-        const data = await response.json() as ListingCreateResponse;
-        if (data.listing) {
-          this.listings = [
-            data.listing,
-            ...this.listings.filter(album => album.id !== data.listing.id),
-          ];
-        }
-        return { ok: true, listing: data.listing, message: '게시글이 서버에 저장되었습니다.' };
+        if (!response.ok) return { ok: false, message: '게시글 저장에 실패했습니다. 서버 응답을 확인해 주세요.' };
+        const data = await response.json() as { listing?: Album };
+        if (data.listing) this.listings = [data.listing, ...this.listings.filter(album => album.id !== data.listing!.id)];
+        return { ok: true, listing: data.listing, message: '게시글을 서버에 저장했습니다.' };
       } catch {
-        return { ok: false, message: '게시글 저장에 실패했습니다. 백엔드 서버 연결을 확인해 주세요.' };
+        return { ok: false, message: '서버 연결 실패로 게시글 저장에 실패했습니다.' };
       }
     },
-    saveDraft(draft: Record<string, unknown>) {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-    },
-    async saveDraftToServer(draft: Record<string, unknown>) {
-      this.saveDraft(draft);
-
+    async updateListing(albumId: string, payload: ListingCreatePayload) {
+      const previous = this.listings;
       try {
-        const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
+        const response = await fetchApi(`/listings/${encodeURIComponent(albumId)}?user_id=${encodeURIComponent(this.user.id)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft }),
+          body: JSON.stringify({ ...payload, user_id: payload.user_id || this.user.id }),
         });
-
-        if (!response.ok) {
-          return { ok: false, persisted: false, message: '로컬에만 임시 저장되었습니다. 서버 응답을 확인해 주세요.' };
-        }
-
-        const data = await response.json() as ListingDraftResponse;
-        if (data.draft) this.saveDraft(data.draft);
-        return {
-          ok: true,
-          persisted: data.persisted,
-          message: data.persisted ? '판매글이 DB에 임시 저장되었습니다.' : '로컬에만 임시 저장되었습니다. DB 연결을 확인해 주세요.',
-        };
+        const data = await response.json().catch(() => ({})) as { listing?: Album; detail?: string };
+        if (!response.ok || !data.listing) throw new Error(data.detail || '게시글 수정에 실패했습니다.');
+        this.listings = [data.listing, ...this.listings.filter(album => album.id !== albumId)];
+        return { ok: true, listing: data.listing, message: '게시글을 수정했습니다.' };
+      } catch (error) {
+        this.listings = previous;
+        return { ok: false, message: error instanceof Error ? error.message : '게시글 수정에 실패했습니다.' };
+      }
+    },
+    async hideListing(albumId: string) {
+      const previous = this.listings;
+      this.listings = this.listings.filter(album => album.id !== albumId);
+      try {
+        const response = await fetchApi(`/listings/${encodeURIComponent(albumId)}?user_id=${encodeURIComponent(this.user.id)}`, { method: 'DELETE' });
+        const data = await response.json().catch(() => ({})) as { detail?: string };
+        if (!response.ok) throw new Error(data.detail || '판매글을 내리지 못했습니다.');
+        return { ok: true, message: '판매글을 내렸습니다.' };
+      } catch (error) {
+        this.listings = previous;
+        return { ok: false, message: error instanceof Error ? error.message : '판매글을 내리지 못했습니다.' };
+      }
+    },
+    readDrafts(): ListingDraftEntry[] {
+      try {
+        return JSON.parse(localStorage.getItem(DRAFTS_KEY) || '[]') as ListingDraftEntry[];
       } catch {
-        return { ok: false, persisted: false, message: '로컬에만 임시 저장되었습니다. 백엔드 서버 연결을 확인해 주세요.' };
+        localStorage.removeItem(DRAFTS_KEY);
+        return [];
+      }
+    },
+    writeDrafts(drafts: ListingDraftEntry[]) {
+      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    },
+    activeDraftId() {
+      return localStorage.getItem(ACTIVE_DRAFT_ID_KEY) || '';
+    },
+    setActiveDraftId(draftId: string) {
+      localStorage.setItem(ACTIVE_DRAFT_ID_KEY, draftId);
+    },
+    saveDraft(draft: Record<string, unknown>) {
+      const draftId = this.activeDraftId() || `local-${Date.now()}`;
+      this.setActiveDraftId(draftId);
+      const title = String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글');
+      const entry = { id: draftId, title, draft, updatedAt: new Date().toISOString() };
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      } catch {
+        // Large image/video data URLs can exceed WebView storage. Keep the in-memory/server flow alive.
+      }
+      try {
+        this.writeDrafts([entry, ...this.readDrafts().filter(item => item.id !== draftId)].slice(0, 20));
+      } catch {
+        // Ignore local draft-list quota failures; server persistence still runs.
+      }
+    },
+    async saveDraftToServer(draft: Record<string, unknown>, draftId = '') {
+      this.saveDraft(draft);
+      const activeId = this.activeDraftId() || draftId;
+      try {
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draft,
+            draftId: activeId,
+            title: String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글'),
+          }),
+        });
+        if (!response.ok) return { ok: false, persisted: false, message: '로컬에 임시 저장했습니다.' };
+        const data = await response.json() as { persisted: boolean; draft?: Record<string, unknown>; draftEntry?: ListingDraftEntry; drafts?: ListingDraftEntry[] };
+        if (data.draft) this.saveDraft(data.draft);
+        if (data.draftEntry) this.setActiveDraftId(data.draftEntry.id);
+        if (data.drafts) {
+          try {
+            this.writeDrafts(data.drafts);
+          } catch {
+            // Keep publishing flow working even when local draft history is too large.
+          }
+        }
+        return { ok: true, persisted: data.persisted, message: '판매글 임시 저장을 완료했습니다.' };
+      } catch {
+        return { ok: false, persisted: false, message: '서버 연결 실패로 로컬에 임시 저장했습니다.' };
       }
     },
     async loadDraftFromServer() {
       try {
-        const response = await fetch(`${API_BASE_URL}/users/${encodeURIComponent(this.user.id)}/listing-draft`);
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`);
         if (!response.ok) return { ok: false, persisted: false, draft: null as Record<string, unknown> | null };
-
-        const data = await response.json() as ListingDraftResponse;
-        if (data.persisted && data.draft) {
-          this.saveDraft(data.draft);
-        }
+        const data = await response.json() as { persisted: boolean; draft: Record<string, unknown> | null };
+        if (data.persisted && data.draft) this.saveDraft(data.draft);
         return { ok: true, persisted: data.persisted, draft: data.draft };
       } catch {
         return { ok: false, persisted: false, draft: null as Record<string, unknown> | null };
       }
+    },
+    async loadDraftsFromServer() {
+      try {
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts`);
+        if (!response.ok) return { ok: false, drafts: this.readDrafts() };
+        const data = await response.json() as { drafts?: ListingDraftEntry[] };
+        if (data.drafts) this.writeDrafts(data.drafts);
+        return { ok: true, drafts: data.drafts || [] };
+      } catch {
+        return { ok: false, drafts: this.readDrafts() };
+      }
+    },
+    activateDraft(entry: ListingDraftEntry) {
+      this.setActiveDraftId(entry.id);
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(entry.draft));
+    },
+    async deleteDraft(draftId: string) {
+      const drafts = this.readDrafts().filter(item => item.id !== draftId);
+      this.writeDrafts(drafts);
+      if (this.activeDraftId() === draftId) {
+        localStorage.removeItem(ACTIVE_DRAFT_ID_KEY);
+        localStorage.removeItem(DRAFT_KEY);
+      }
+      void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' }).catch(() => undefined);
     },
     readDraft() {
       try {
@@ -381,10 +578,94 @@ export const useAppStore = defineStore('app', {
       }
     },
     clearDraft() {
+      const activeId = this.activeDraftId();
       localStorage.removeItem(DRAFT_KEY);
-      void fetch(`${API_BASE_URL}/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
-        method: 'DELETE',
-      }).catch(() => undefined);
+      if (activeId) {
+        this.writeDrafts(this.readDrafts().filter(item => item.id !== activeId));
+        localStorage.removeItem(ACTIVE_DRAFT_ID_KEY);
+      }
+      void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, { method: 'DELETE' }).catch(() => undefined);
+    },
+    async checkServerHealth() {
+      try {
+        const response = await fetchApi('/health', {}, 4000);
+        return { ok: response.ok, apiBaseUrl: currentApiBaseUrl() };
+      } catch (error) {
+        return { ok: false, apiBaseUrl: currentApiBaseUrl(), message: error instanceof Error ? error.message : 'Server connection failed' };
+      }
+    },
+    async submitReview(payload: {
+      revieweeId: string;
+      reviewerId?: string;
+      reviewerName?: string;
+      rating: number;
+      comment?: string;
+      tags?: string[];
+      albumId?: string;
+      albumTitle?: string;
+      transactionId?: string;
+    }) {
+      const response = await fetchApi('/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          reviewerId: payload.reviewerId || this.user.id,
+          reviewerName: payload.reviewerName || this.user.username,
+          ...payload,
+        }),
+      });
+      const data = await response.json().catch(() => ({})) as { review?: SellerReview; summary?: ReviewSummary; user?: User; detail?: string };
+      if (!response.ok || !data.review) throw new Error(data.detail || '리뷰 등록에 실패했습니다.');
+      if (data.user && data.user.id === this.user.id) this.updateUserProfile(data.user);
+      return data;
+    },
+    async loadUserReviews(userId: string) {
+      const response = await fetchApi(`/users/${encodeURIComponent(userId)}/reviews`);
+      const data = await response.json().catch(() => ({})) as { reviews?: SellerReview[]; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '리뷰를 불러오지 못했습니다.');
+      return data.reviews || [];
+    },
+    async loadReviewSummary(userId: string) {
+      const response = await fetchApi(`/users/${encodeURIComponent(userId)}/review-summary`);
+      const data = await response.json().catch(() => ({})) as ReviewSummary & { user?: User; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '리뷰 요약을 불러오지 못했습니다.');
+      if (data.user && data.user.id === this.user.id) this.updateUserProfile(data.user);
+      return { average: Number(data.average || 0), count: Number(data.count || 0) };
+    },
+    async updateReview(reviewId: string, payload: { rating: number; comment?: string; tags?: string[] }) {
+      const response = await fetchApi(`/reviews/${encodeURIComponent(reviewId)}?reviewer_id=${encodeURIComponent(this.user.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({})) as { review?: SellerReview; summary?: ReviewSummary; user?: User; detail?: string };
+      if (!response.ok || !data.review) throw new Error(data.detail || '리뷰 수정에 실패했습니다.');
+      if (data.user && data.user.id === this.user.id) this.updateUserProfile(data.user);
+      return data;
+    },
+    async deleteReview(reviewId: string) {
+      const response = await fetchApi(`/reviews/${encodeURIComponent(reviewId)}?reviewer_id=${encodeURIComponent(this.user.id)}`, { method: 'DELETE' });
+      const data = await response.json().catch(() => ({})) as { deleted?: boolean; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '리뷰 삭제에 실패했습니다.');
+      return data;
+    },
+    async requestFindId(email: string) {
+      const response = await authFetch('/auth/find-id', { email });
+      const data = await response.json().catch(() => ({})) as { message?: string; username?: string; maskedUsername?: string; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '아이디 찾기에 실패했습니다.');
+      return data;
+    },
+    async requestPasswordReset(loginId: string) {
+      const response = await authFetch('/auth/password-reset/request', { loginId });
+      const data = await response.json().catch(() => ({})) as { message?: string; devResetCode?: string; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '비밀번호 재설정 요청에 실패했습니다.');
+      return data;
+    },
+    async confirmPasswordReset(resetCode: string, password: string) {
+      const response = await authFetch('/auth/password-reset/confirm', { resetCode, password });
+      const data = await response.json().catch(() => ({})) as { message?: string; detail?: string };
+      if (!response.ok) throw new Error(data.detail || '비밀번호 재설정에 실패했습니다.');
+      return data;
     },
   },
 });

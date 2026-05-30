@@ -14,7 +14,7 @@
       <section v-if="canSellerReply" class="p-4 bg-white border-b space-y-3">
         <div>
           <h2 class="text-base">판매자 답변</h2>
-          <p class="text-sm text-gray-500 mt-1">내가 판매 중인 상품에 달린 구매자 문의에만 답변할 수 있습니다.</p>
+          <p class="text-sm text-gray-500 mt-1">구매자가 남긴 문의를 선택해 직접 답변하세요.</p>
         </div>
 
         <div v-if="buyerQuestions.length > 0" class="space-y-2">
@@ -29,7 +29,7 @@
           >
             <div class="flex items-center justify-between gap-2">
               <span class="text-sm text-gray-700">{{ comment.userName }}</span>
-              <span v-if="comment.sellerReply" class="text-xs text-green-600">답변 완료</span>
+              <span v-if="repliesByParent[comment.id]?.length" class="text-xs text-green-600">답변 완료</span>
             </div>
             <p class="text-sm mt-1 line-clamp-2">{{ comment.content }}</p>
           </button>
@@ -39,20 +39,6 @@
         </div>
 
         <template v-if="buyerQuestions.length > 0">
-          <div class="grid grid-cols-3 gap-2">
-            <button
-              v-for="template in replyTemplates"
-              :key="template.id"
-              :class="[
-                'py-2 px-2 rounded-lg border text-sm',
-                selectedTemplateId === template.id ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700'
-              ]"
-              @click="chooseTemplate(template.id)"
-            >
-              {{ template.label }}
-            </button>
-          </div>
-
           <textarea
             v-model="sellerReply"
             class="w-full px-4 py-3 border rounded-lg min-h-24 bg-white"
@@ -75,7 +61,10 @@
       </section>
 
       <section class="divide-y bg-white">
-        <article v-for="comment in comments" :key="comment.id" class="px-4 py-4">
+        <div v-if="buyerQuestions.length === 0" class="px-4 py-12 text-center text-sm text-gray-500">
+          아직 문의가 없습니다.
+        </div>
+        <article v-for="comment in buyerQuestions" :key="comment.id" class="px-4 py-4">
           <div class="flex items-center gap-2 mb-2">
             <div
               :class="[
@@ -98,20 +87,22 @@
           </div>
           <p class="text-sm pl-10">{{ comment.content }}</p>
 
-          <div v-if="comment.sellerReply" class="mt-3 ml-10 rounded-lg bg-blue-50 border border-blue-100 p-3">
-            <p class="text-xs text-blue-600 mb-1">판매자 답변 · {{ comment.replyType }}</p>
-            <p class="text-sm text-gray-800">{{ comment.sellerReply }}</p>
+          <div v-if="repliesByParent[comment.id]?.length" class="mt-3 ml-10 space-y-2">
+            <div v-for="reply in repliesByParent[comment.id]" :key="reply.id" class="rounded-lg bg-blue-50 border border-blue-100 p-3">
+              <p class="text-xs text-blue-600 mb-1">판매자 답변 · {{ new Date(reply.timestamp).toLocaleDateString('ko-KR') }}</p>
+              <p class="text-sm text-gray-800">{{ reply.content }}</p>
+            </div>
           </div>
         </article>
       </section>
     </main>
 
-    <form v-if="!isSeller || canSellerReply" class="p-4 border-t bg-white" @submit.prevent="submit">
+    <form v-if="!isSeller" class="p-4 border-t bg-white" @submit.prevent="submit">
       <div class="flex gap-2">
         <input
           v-model="newComment"
           type="text"
-          :placeholder="isSeller ? '판매자로 추가 답변을 남기세요' : '판매자에게 문의를 남겨보세요'"
+          placeholder="판매자에게 문의를 남겨보세요"
           class="flex-1 min-w-0 px-4 py-3 border rounded-lg"
         />
         <button type="submit" class="px-4 py-3 bg-blue-600 text-white rounded-lg disabled:bg-gray-300" :disabled="!newComment.trim()">
@@ -123,112 +114,144 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, Send } from 'lucide-vue-next';
-import { mockAlbums } from '../data/mockData';
 import { getActiveTrade } from '../data/tradeState';
 import { useAppStore } from '../stores/appStore';
+import { fallbackAlbum } from '../data/albumLookup';
+import { fetchApi } from '../data/api';
 
 interface ProductComment {
   id: string;
+  listingId: string;
+  userId: string;
   userName: string;
   role: 'seller' | 'buyer';
   content: string;
   timestamp: string;
-  replyToId?: string;
-  sellerReply?: string;
-  replyType?: string;
+  parentId?: string;
 }
 
 const route = useRoute();
 const router = useRouter();
 const store = useAppStore();
-const album = computed(() => mockAlbums.find(item => item.id === route.params.albumId) || mockAlbums[0]);
+const album = computed(() => fallbackAlbum(store, route.params.albumId));
 const activeTrade = computed(() => getActiveTrade(album.value.id));
 const isSeller = computed(() => store.user.id === album.value.seller.id);
 const canSellerReply = computed(() => isSeller.value && activeTrade.value?.status !== 'completed');
 const currentRole = computed<'seller' | 'buyer'>(() => isSeller.value ? 'seller' : 'buyer');
 const currentName = computed(() => isSeller.value ? album.value.seller.name : store.user.username);
+const commentsKey = computed(() => `vinyl-check-comments:${album.value.id}`);
 
-const comments = ref<ProductComment[]>([
-  {
-    id: '1',
-    userName: 'LP애호가',
-    role: 'buyer',
-    content: '자켓 모서리 눌림이나 갈라짐이 있나요?',
-    timestamp: '2026-04-19T10:30:00',
-    sellerReply: '상단 모서리에 아주 약한 눌림이 있고 갈라짐은 없습니다. 필요하면 채팅으로 추가 사진을 보내드릴게요.',
-    replyType: '상태 설명',
-  },
-  {
-    id: '2',
-    userName: '재즈러버',
-    role: 'buyer',
-    content: '초반 여부를 확인할 수 있을까요?',
-    timestamp: '2026-04-18T15:20:00',
-  },
-]);
+onMounted(() => {
+  void store.loadListingsFromServer();
+  void loadComments();
+});
 
-const replyTemplates = computed(() => [
-  {
-    id: 'condition',
-    label: '상태 설명',
-    text: '자켓과 음반 상태 기준으로 설명드리면, 사진과 같은 등급이며 큰 터짐이나 찢김은 없습니다.',
-  },
-  {
-    id: 'pressing',
-    label: '판본 확인',
-    text: `카탈로그 번호 ${album.value.catalogNumber} 기준으로 확인한 판본입니다. 라벨/런아웃 사진이 필요하면 채팅으로 추가 확인해드릴 수 있습니다.`,
-  },
-  {
-    id: 'deal',
-    label: '거래 안내',
-    text: '직거래와 택배 모두 가능합니다. 거래 장소와 시간은 채팅에서 조율하겠습니다.',
-  },
-]);
-
-const buyerQuestions = computed(() => comments.value.filter(comment => comment.role === 'buyer'));
-const selectedQuestionId = ref(buyerQuestions.value.find(comment => !comment.sellerReply)?.id || buyerQuestions.value[0]?.id || '');
-const selectedTemplateId = ref(replyTemplates.value[0].id);
-const sellerReply = ref(replyTemplates.value[0].text);
+const comments = ref<ProductComment[]>([]);
+const buyerQuestions = computed(() => comments.value.filter(comment => comment.role === 'buyer' && !comment.parentId));
+const repliesByParent = computed(() => comments.value.reduce<Record<string, ProductComment[]>>((groups, comment) => {
+  if (!comment.parentId) return groups;
+  groups[comment.parentId] = [...(groups[comment.parentId] || []), comment];
+  return groups;
+}, {}));
+const selectedQuestionId = ref('');
+const sellerReply = ref('');
 const newComment = ref('');
+
+watch(buyerQuestions, questions => {
+  if (!questions.length) {
+    selectedQuestionId.value = '';
+    return;
+  }
+  if (!questions.some(comment => comment.id === selectedQuestionId.value)) {
+    selectedQuestionId.value = questions[0].id;
+  }
+}, { immediate: true });
 
 const selectQuestion = (id: string) => {
   selectedQuestionId.value = id;
 };
 
-const chooseTemplate = (id: string) => {
-  const template = replyTemplates.value.find(item => item.id === id);
-  if (!template) return;
-  selectedTemplateId.value = id;
-  sellerReply.value = template.text;
+const readLocalComments = () => {
+  try {
+    return JSON.parse(localStorage.getItem(commentsKey.value) || '[]') as ProductComment[];
+  } catch {
+    localStorage.removeItem(commentsKey.value);
+    return [];
+  }
+};
+
+const saveLocalComments = () => {
+  localStorage.setItem(commentsKey.value, JSON.stringify(comments.value));
+};
+
+const loadComments = async () => {
+  comments.value = readLocalComments();
+  try {
+    const response = await fetchApi(`/listings/${encodeURIComponent(album.value.id)}/comments`);
+    if (!response.ok) return;
+    const payload = await response.json() as ProductComment[];
+    comments.value = payload;
+    saveLocalComments();
+  } catch {
+    // Local comments keep the screen usable when the phone cannot reach the API.
+  }
+};
+
+const addComment = async (comment: ProductComment) => {
+  comments.value = [comment, ...comments.value];
+  saveLocalComments();
+  try {
+    const response = await fetchApi(`/listings/${encodeURIComponent(album.value.id)}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId: comment.userId,
+        userName: comment.userName,
+        role: comment.role,
+        content: comment.content,
+        parentId: comment.parentId,
+      }),
+    });
+    if (!response.ok) return;
+    const payload = await response.json() as { comment?: ProductComment };
+    if (!payload.comment) return;
+    comments.value = [payload.comment, ...comments.value.filter(item => item.id !== comment.id)];
+    saveLocalComments();
+  } catch {
+    // The optimistic local comment remains visible and will not block the user.
+  }
 };
 
 const postSellerReply = () => {
   if (!canSellerReply.value) return;
-  const target = comments.value.find(comment => comment.id === selectedQuestionId.value);
-  const template = replyTemplates.value.find(item => item.id === selectedTemplateId.value);
-  if (!target || !sellerReply.value.trim()) return;
-  target.sellerReply = sellerReply.value.trim();
-  target.replyType = template?.label || '직접 답변';
+  if (!selectedQuestionId.value || !sellerReply.value.trim()) return;
+  void addComment({
+    id: `local-${Date.now()}`,
+    listingId: album.value.id,
+    userId: store.user.id,
+    userName: currentName.value,
+    role: 'seller',
+    content: sellerReply.value.trim(),
+    timestamp: new Date().toISOString(),
+    parentId: selectedQuestionId.value,
+  });
   sellerReply.value = '';
 };
 
 const submit = () => {
   if (!newComment.value.trim()) return;
-  if (isSeller.value && !canSellerReply.value) return;
-  comments.value = [
-    {
-      id: String(Date.now()),
-      userName: currentName.value,
-      role: currentRole.value,
-      content: newComment.value.trim(),
-      timestamp: new Date().toISOString(),
-      replyToId: currentRole.value === 'seller' ? selectedQuestionId.value : undefined,
-    },
-    ...comments.value,
-  ];
+  void addComment({
+    id: `local-${Date.now()}`,
+    listingId: album.value.id,
+    userId: store.user.id,
+    userName: currentName.value,
+    role: currentRole.value,
+    content: newComment.value.trim(),
+    timestamp: new Date().toISOString(),
+  });
   newComment.value = '';
 };
 </script>

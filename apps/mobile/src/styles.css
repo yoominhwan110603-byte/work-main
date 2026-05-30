@@ -5,6 +5,7 @@
 
 :root {
   --font-size: 16px;
+  --app-font-family: "Noto Sans KR", "Noto Sans CJK KR", "Roboto", "SamsungOne", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --background: #ffffff;
   --foreground: oklch(0.145 0 0);
   --card: #ffffff;
@@ -89,6 +90,7 @@
 
   html {
     font-size: var(--font-size);
+    font-family: var(--app-font-family);
     color-scheme: light;
   }
 
@@ -106,8 +108,19 @@
   body {
     @apply bg-background text-foreground;
     margin: 0;
-    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
+    font-family: var(--app-font-family);
+    letter-spacing: 0;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
     overflow: hidden;
+  }
+
+  body,
+  button,
+  input,
+  textarea,
+  select {
+    font-family: var(--app-font-family);
   }
 
   h1 {
@@ -137,7 +150,8 @@
   }
 
   input,
-  textarea {
+  textarea,
+  select {
     font-size: var(--text-base);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;

@@ -1,12 +1,14 @@
-import { createRouter, createWebHistory } from 'vue-router';
+import { Capacitor } from '@capacitor/core';
+import { createRouter, createWebHashHistory, createWebHistory } from 'vue-router';
 import MainLayout from './layouts/MainLayout.vue';
 import SplashView from './views/SplashView.vue';
 import LoginView from './views/LoginView.vue';
 import SignupView from './views/SignupView.vue';
+import FindIdView from './views/FindIdView.vue';
+import ResetPasswordView from './views/ResetPasswordView.vue';
 import PreferenceView from './views/PreferenceView.vue';
 import HomeView from './views/HomeView.vue';
 import SearchView from './views/SearchView.vue';
-import SearchResultView from './views/SearchResultView.vue';
 import AlbumDetailView from './views/AlbumDetailView.vue';
 import FavoritesView from './views/FavoritesView.vue';
 import NotificationsView from './views/NotificationsView.vue';
@@ -28,11 +30,13 @@ import ReviewView from './views/ReviewView.vue';
 import ReportView from './views/ReportView.vue';
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: Capacitor.isNativePlatform() ? createWebHashHistory() : createWebHistory(),
   routes: [
     { path: '/', component: SplashView },
     { path: '/auth/login', component: LoginView },
     { path: '/auth/signup', component: SignupView },
+    { path: '/auth/find-id', component: FindIdView },
+    { path: '/auth/reset-password', component: ResetPasswordView },
     { path: '/auth/preference', component: PreferenceView },
     {
       path: '/app',
@@ -40,7 +44,7 @@ export const router = createRouter({
       children: [
         { path: '', component: HomeView },
         { path: 'search', component: SearchView },
-        { path: 'search/results', component: SearchResultView },
+        { path: 'search/results', redirect: to => ({ path: '/app/search', query: to.query }) },
         { path: 'album/:id', component: AlbumDetailView },
         { path: 'favorites', component: FavoritesView },
         { path: 'notifications', component: NotificationsView },
@@ -50,6 +54,7 @@ export const router = createRouter({
       ],
     },
     { path: '/sell', component: SellView },
+    { path: '/sell/:id/edit', component: SellView },
     { path: '/sell/camera', component: CameraView },
     { path: '/sell/analysis', component: AnalysisRequestView },
     { path: '/sell/analysis/result', component: AnalysisResultView },

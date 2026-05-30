@@ -15,11 +15,10 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue';
 import { Heart } from 'lucide-vue-next';
-import { mockAlbums } from '../data/mockData';
 import { useAppStore } from '../stores/appStore';
 import AlbumCard from '../components/AlbumCard.vue';
 
 const store = useAppStore();
-onMounted(() => { if (store.favorites.length === 0) store.favorites = mockAlbums.slice(0, 3).map(album => album.id); });
-const favoriteAlbums = computed(() => mockAlbums.filter(album => store.favorites.includes(album.id)));
+onMounted(() => { void store.loadListingsFromServer(); });
+const favoriteAlbums = computed(() => store.listings.filter(album => store.favorites.includes(String(album.id))));
 </script>

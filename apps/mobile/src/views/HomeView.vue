@@ -65,7 +65,7 @@ const filteredAlbums = computed(() => {
   const normalized = query.value.trim().toLowerCase();
   if (!normalized) return store.listings;
   return store.listings.filter(album =>
-    [album.title, album.artist, album.genre, album.catalogNumber, album.location, album.audioGrade, album.jacketGrade]
+    [album.title, album.artist, album.genre, album.catalogNumber, album.location, album.audioGrade]
       .some(value => value.toLowerCase().includes(normalized))
   );
 });

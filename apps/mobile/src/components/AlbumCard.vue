@@ -31,7 +31,6 @@
 
         <div class="flex flex-wrap items-center gap-1.5 mb-2">
           <span class="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded">음질 {{ album.audioGrade }}</span>
-          <span class="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded">자켓 {{ album.jacketGrade }}</span>
           <span v-if="album.isFirstPress" class="px-2 py-0.5 bg-purple-100 text-purple-700 text-xs rounded">
             초반
           </span>
