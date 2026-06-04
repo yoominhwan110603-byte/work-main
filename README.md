@@ -10,7 +10,15 @@ surface.
 - `apps/mobile/android`: Android APK project.
 - `backend`: FastAPI API used by the APK.
 - `backend/data`: local JSON runtime storage for the current FastAPI server.
-- `database`: target SQL structure for a future DB-backed server.
+
+## Mobile source layout
+
+- `apps/mobile/src/features/auth`: splash, login, signup, ID/password recovery, preferences.
+- `apps/mobile/src/features/buyer`: home, search, album detail, favorites, comments, price offers.
+- `apps/mobile/src/features/seller`: sell flow, camera capture, LP analysis, pricing, received offers.
+- `apps/mobile/src/features/transaction`: chat, active transactions, location, cancellation, reviews, reports.
+- `apps/mobile/src/features/account`: profile, notifications, settings.
+- `apps/mobile/src/shared`: common components, layouts, models, stores, and API utilities.
 
 ## Auth setup
 
@@ -70,5 +78,5 @@ npm.cmd run android:debug
 Current LAN API default for APK builds:
 
 ```text
-http://192.168.219.113:8000
+http://172.30.1.67:8000
 ```

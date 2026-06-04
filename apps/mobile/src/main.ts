@@ -3,7 +3,7 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import { router } from './router';
 import './styles.css';
-import { useAppStore } from './stores/appStore';
+import { useAppStore } from '@/shared/stores/appStore';
 
 const pinia = createPinia();
 const app = createApp(App);
