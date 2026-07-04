@@ -1,13 +1,34 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
-const DEFAULT_LAN_API_BASE_URL = 'http://172.30.1.67:8000';
+const DEFAULT_LAN_API_BASE_URL = 'http://172.30.13.172:8000';
 const FALLBACK_LAN_API_BASE_URLS = [
+  'http://172.30.13.172:8000',
   'http://172.30.1.67:8000',
   'http://192.168.219.112:8000',
   'http://192.168.219.113:8000',
   'http://172.30.14.95:8000',
 ];
 const API_OVERRIDE_KEY = 'vinyl-check-api-base-url';
+const AUTH_TOKEN_KEY = 'vinyl-check-auth-token';
+
+function authToken() {
+  if (typeof window === 'undefined') return '';
+  return localStorage.getItem(AUTH_TOKEN_KEY) || sessionStorage.getItem(AUTH_TOKEN_KEY) || '';
+}
+
+function withAuthorization(headers?: HeadersInit) {
+  const normalized = new Headers(headers || {});
+  const token = authToken();
+  if (token && !normalized.has('Authorization')) normalized.set('Authorization', `Bearer ${token}`);
+  return normalized;
+}
+
+function announceExpiredSession(response: Response, path: string) {
+  if (response.status === 401 && authToken() && !path.startsWith('/auth/')) {
+    window.dispatchEvent(new CustomEvent('vinyl-check-auth-expired'));
+  }
+  return response;
+}
 
 function normalizeBaseUrl(value: string) {
   return value.trim().replace(/\/$/, '');
@@ -19,6 +40,13 @@ function uniqueUrls(urls: Array<string | undefined>) {
 
 export function getApiBaseUrl() {
   return getApiBaseUrlCandidates()[0];
+}
+
+export function resolveApiUrl(pathOrUrl: string) {
+  if (!pathOrUrl) return '';
+  if (/^(https?:|data:|blob:|capacitor:)/i.test(pathOrUrl)) return pathOrUrl;
+  if (pathOrUrl.startsWith('/')) return `${getApiBaseUrl()}${pathOrUrl}`;
+  return pathOrUrl;
 }
 
 export function getApiBaseUrlCandidates() {
@@ -89,14 +117,15 @@ async function fetchBrowserApi(baseUrl: string, path: string, init: RequestInit 
 export async function fetchApi(path: string, init: RequestInit = {}, timeoutMs = 8000) {
   const candidates = getApiBaseUrlCandidates();
   let lastError: unknown = null;
+  const authenticatedInit: RequestInit = { ...init, headers: withAuthorization(init.headers) };
 
   for (const baseUrl of candidates) {
     try {
       if (Capacitor.isNativePlatform()) {
-        const nativeResponse = await fetchNativeApi(baseUrl, path, init, timeoutMs);
-        if (nativeResponse) return nativeResponse;
+        const nativeResponse = await fetchNativeApi(baseUrl, path, authenticatedInit, timeoutMs);
+        if (nativeResponse) return announceExpiredSession(nativeResponse, path);
       }
-      return await fetchBrowserApi(baseUrl, path, init, timeoutMs);
+      return announceExpiredSession(await fetchBrowserApi(baseUrl, path, authenticatedInit, timeoutMs), path);
     } catch (error) {
       lastError = error;
     }

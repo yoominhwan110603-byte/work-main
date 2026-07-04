@@ -63,10 +63,8 @@ const requestReset = async () => {
   message.value = '';
   try {
     const result = await store.requestPasswordReset(loginId.value);
-    if (result.devResetCode) resetCode.value = result.devResetCode;
-    message.value = result.devResetCode
-      ? `${result.message || '인증번호를 이메일로 발송했습니다.'} 개발용 인증번호: ${result.devResetCode}`
-      : result.message || '인증번호를 이메일로 발송했습니다.';
+    resetCode.value = '';
+    message.value = result.message || '인증번호를 이메일로 발송했습니다.';
     codeSent.value = true;
     messageType.value = 'info';
   } catch (error) {

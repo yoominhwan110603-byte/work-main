@@ -1,13 +1,31 @@
 <template>
   <div class="size-full bg-white overflow-y-auto">
-    <header class="px-4 py-4 border-b sticky top-0 bg-white"><h1 class="text-2xl">알림</h1></header>
-    <div v-if="isLoading" class="p-8 text-center text-sm text-gray-500">알림을 불러오는 중입니다.</div>
-    <div v-else-if="notifications.length > 0">
-      <button v-for="notification in notifications" :key="notification.id" :class="['w-full px-4 py-4 flex gap-3 border-b hover:bg-gray-50 text-left', !notification.isRead ? 'bg-blue-50' : '']" @click="open(notification)">
-        <div class="flex-shrink-0 mt-1"><component :is="iconFor(notification.type)" :size="20" :class="colorFor(notification.type)" /></div>
-        <div class="flex-1 min-w-0"><p :class="['text-sm mb-1', notification.isRead ? 'text-gray-700' : '']">{{ notification.title }}</p><p class="text-sm text-gray-600 mb-2">{{ notification.message }}</p><p class="text-xs text-gray-400">{{ formatTime(notification.timestamp) }}</p></div>
-        <div v-if="!notification.isRead" class="flex-shrink-0"><div class="w-2 h-2 bg-blue-600 rounded-full"></div></div>
+    <header class="sticky top-0 flex items-center justify-between border-b bg-white px-4 py-4">
+      <h1 class="text-2xl">알림</h1>
+      <button v-if="unreadCount > 0" class="flex items-center gap-1 rounded-lg px-2 py-1 text-sm text-blue-600" @click="readAll">
+        <CheckCheck :size="17" />전체 읽음
       </button>
+    </header>
+    <div v-if="isLoading" class="p-8 text-center text-sm text-gray-500">알림을 불러오는 중입니다.</div>
+    <p v-else-if="errorMessage" class="m-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{{ errorMessage }}</p>
+    <div v-else-if="notifications.length > 0">
+      <article v-for="notification in notifications" :key="notification.id" :class="['flex items-stretch border-b', !notification.isRead ? 'bg-blue-50' : '']">
+        <button class="flex min-w-0 flex-1 gap-3 px-4 py-4 text-left hover:bg-gray-50" :disabled="removingId === notification.id" @click="open(notification)">
+          <div class="mt-1 flex-shrink-0"><component :is="iconFor(notification.type)" :size="20" :class="colorFor(notification.type)" /></div>
+          <div class="min-w-0 flex-1"><p :class="['mb-1 text-sm', notification.isRead ? 'text-gray-700' : '']">{{ notification.title }}</p><p class="mb-2 text-sm text-gray-600">{{ notification.message }}</p><p class="text-xs text-gray-400">{{ formatTime(notification.timestamp) }}</p></div>
+          <div v-if="!notification.isRead" class="mt-1 flex-shrink-0"><div class="h-2 w-2 rounded-full bg-blue-600"></div></div>
+        </button>
+        <button
+          type="button"
+          class="flex w-12 shrink-0 items-center justify-center text-gray-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+          :disabled="removingId === notification.id"
+          :aria-label="`${notification.title} 알림 삭제`"
+          @click="remove(notification)"
+        >
+          <LoaderCircle v-if="removingId === notification.id" :size="18" class="animate-spin" />
+          <Trash2 v-else :size="18" />
+        </button>
+      </article>
     </div>
     <div v-else class="flex-1 flex flex-col items-center justify-center p-8 text-center"><Bell :size="64" class="text-gray-300 mb-4" /><h2 class="text-lg text-gray-600 mb-2">알림이 없습니다</h2><p class="text-sm text-gray-500">새로운 소식이 있으면 알려드릴게요</p></div>
   </div>
@@ -16,24 +34,29 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { AlertCircle, Bell, Heart, MessageCircle, Package } from 'lucide-vue-next';
+import { AlertCircle, Bell, CheckCheck, Heart, LoaderCircle, MessageCircle, Package, Trash2 } from 'lucide-vue-next';
 import type { Notification } from '@/shared/models/market';
-import { fetchApi } from '@/shared/services/api';
+import { deleteNotification, fetchNotifications, markAllNotificationsRead } from '@/shared/services/notifications';
 import { useAppStore } from '@/shared/stores/appStore';
 
 const router = useRouter();
 const store = useAppStore();
 const notifications = ref<Notification[]>([]);
 const isLoading = ref(false);
+const errorMessage = ref('');
+const unreadCount = ref(0);
+const removingId = ref('');
 
 const loadNotifications = async () => {
   isLoading.value = true;
+  errorMessage.value = '';
   try {
-    const response = await fetchApi(`/users/${encodeURIComponent(store.user.id)}/notifications`);
-    const payload = await response.json().catch(() => ({})) as { notifications?: Notification[] };
-    notifications.value = response.ok ? (payload.notifications || []) : [];
-  } catch {
+    notifications.value = (await fetchNotifications()).notifications;
+    unreadCount.value = notifications.value.filter(item => !item.isRead).length;
+    store.unreadNotificationCount = unreadCount.value;
+  } catch (error) {
     notifications.value = [];
+    errorMessage.value = error instanceof Error ? error.message : '알림을 불러오지 못했습니다.';
   } finally {
     isLoading.value = false;
   }
@@ -41,9 +64,43 @@ const loadNotifications = async () => {
 
 const iconFor = (type: string) => type === 'offer' ? Package : type === 'chat' ? MessageCircle : type === 'favorite' ? Heart : type === 'listing' ? Bell : AlertCircle;
 const colorFor = (type: string) => type === 'offer' ? 'text-blue-600' : type === 'chat' ? 'text-green-600' : type === 'favorite' ? 'text-red-600' : type === 'listing' ? 'text-purple-600' : 'text-gray-600';
-const open = (notification: Notification) => {
-  notification.isRead = true;
-  if (notification.link) router.push(notification.link);
+const syncUnreadCount = () => {
+  unreadCount.value = notifications.value.filter(item => !item.isRead).length;
+  store.unreadNotificationCount = unreadCount.value;
+};
+const remove = async (notification: Notification, navigate = false) => {
+  if (removingId.value) return;
+  const index = notifications.value.findIndex(item => item.id === notification.id);
+  if (index < 0) return;
+  removingId.value = notification.id;
+  errorMessage.value = '';
+  notifications.value.splice(index, 1);
+  syncUnreadCount();
+  try {
+    const result = await deleteNotification(notification.id);
+    unreadCount.value = result.unreadCount;
+    store.unreadNotificationCount = result.unreadCount;
+    if (navigate && notification.link) await router.push(notification.link);
+  } catch (error) {
+    notifications.value.splice(index, 0, notification);
+    syncUnreadCount();
+    errorMessage.value = error instanceof Error ? error.message : '알림을 삭제하지 못했습니다.';
+  } finally {
+    removingId.value = '';
+  }
+};
+const open = (notification: Notification) => remove(notification, true);
+const readAll = async () => {
+  const previous = unreadCount.value;
+  notifications.value.forEach(notification => { notification.isRead = true; });
+  unreadCount.value = 0;
+  store.unreadNotificationCount = 0;
+  try {
+    await markAllNotificationsRead();
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '알림 읽음 처리에 실패했습니다.';
+    if (previous > 0) await loadNotifications();
+  }
 };
 const formatTime = (timestamp: string) => {
   const diffMins = Math.floor((Date.now() - new Date(timestamp).getTime()) / 60000);

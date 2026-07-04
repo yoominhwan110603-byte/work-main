@@ -492,7 +492,7 @@ const applyCapture = async () => {
   if (!pendingDataUrl.value || isApplyingCapture.value) return;
   isApplyingCapture.value = true;
   const storageKey = isVideoMode.value ? 'vinyl-check-scanned-record-video' : 'vinyl-check-scanned-record-image';
-  setPendingCapture(isVideoMode.value ? 'video' : 'image', pendingDataUrl.value);
+  await setPendingCapture(isVideoMode.value ? 'video' : 'image', pendingDataUrl.value);
   if (isVideoMode.value) {
     localStorage.removeItem(storageKey);
   } else {

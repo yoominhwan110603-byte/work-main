@@ -65,6 +65,9 @@
         <button :class="['flex-1 py-4 flex items-center justify-center gap-2', activeTab === 'reviews' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500']" @click="activeTab = 'reviews'">
           <Star :size="20" /><span>리뷰</span>
         </button>
+        <button :class="['flex-1 py-4 flex items-center justify-center gap-2', activeTab === 'wishlist' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-gray-500']" @click="activeTab = 'wishlist'">
+          <span class="text-lg leading-none" aria-hidden="true">🙏</span><span>위시</span>
+        </button>
       </div>
     </section>
 
@@ -90,6 +93,8 @@
           등록한 판매글이 없습니다
         </div>
       </div>
+
+      <WishlistPanel v-else-if="activeTab === 'wishlist'" :owner-id="profileUserId" :own="isOwnProfile" />
 
       <div v-else class="space-y-4">
         <p v-if="reviewError" class="text-sm text-amber-600">{{ reviewError }}</p>
@@ -119,12 +124,13 @@ import { MessageCircle, Package, Settings, Star } from 'lucide-vue-next';
 import { getActiveTrade, getActiveTrades } from '@/features/transaction/services/tradeState';
 import { useAppStore, type SellerReview, type ReviewSummary } from '@/shared/stores/appStore';
 import { makeOneToOneChatId } from '@/features/transaction/services/chatClient';
+import WishlistPanel from '@/features/account/components/WishlistPanel.vue';
 import VinylCover from '@/shared/components/VinylCover.vue';
 
 const route = useRoute();
 const router = useRouter();
 const store = useAppStore();
-const activeTab = ref<'selling' | 'reviews'>('selling');
+const activeTab = ref<'selling' | 'reviews' | 'wishlist'>('selling');
 const reviews = ref<SellerReview[]>([]);
 const reviewSummary = ref<ReviewSummary>({ average: 0, count: 0 });
 const reviewLoading = ref(false);
@@ -136,7 +142,7 @@ const userListings = computed(() => store.listings.filter(album => album.seller.
 const sellerSource = computed(() => userListings.value[0]?.seller);
 const profileData = computed(() => ({
   id: profileUserId.value,
-  name: isOwnProfile.value ? (store.user?.username || 'Guest') : (sellerSource.value?.name || '판매자'),
+  name: isOwnProfile.value ? (store.user?.username || 'Guest') : (sellerSource.value?.name || '사용자'),
   rating: isOwnProfile.value ? Number(store.user?.rating || 0) : Number(reviewSummary.value.average || sellerSource.value?.rating || 0),
   transactionCount: isOwnProfile.value ? Number(store.user?.transactionCount || 0) : Number(reviewSummary.value.count || sellerSource.value?.transactionCount || 0),
   genres: isOwnProfile.value ? (store.user?.genres || []) : Array.from(new Set(userListings.value.map(album => album.genre).filter(Boolean))),

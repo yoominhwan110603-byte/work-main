@@ -1,13 +1,61 @@
 export interface AlbumCandidate {
   id: string;
   releaseId?: number;
+  masterId?: number;
   title: string;
   artist: string;
   year: number;
   label: string;
   catalogNumber: string;
   country: string;
+  coverImageUrl?: string;
+  pressing?: string;
   confidence: number;
+  communityHave?: number;
+  communityWant?: number;
+  representativeReason?: string;
+}
+
+export interface DiscogsAlbumSummary {
+  masterId: number;
+  title: string;
+  artist: string;
+  year: number;
+  coverImageUrl?: string;
+  communityHave: number;
+  communityWant: number;
+  exactMatch: boolean;
+}
+
+export interface DiscogsAlbumSearchResult {
+  source: 'discogs';
+  albums: DiscogsAlbumSummary[];
+  pagination: {
+    page: number;
+    perPage: number;
+    pages: number;
+    total: number;
+  };
+}
+
+export interface DiscogsRepresentativeVersions {
+  masterId: number;
+  representative: AlbumCandidate[];
+  total: number;
+  remainingCount: number;
+  partial: boolean;
+}
+
+export interface DiscogsVersionPage {
+  masterId: number;
+  versions: AlbumCandidate[];
+  offset: number;
+  limit: number;
+  total: number;
+  remainingCount: number;
+  nextOffset: number;
+  hasMore: boolean;
+  partial: boolean;
 }
 
 export interface TrackRecommendation {
@@ -37,7 +85,6 @@ export interface PressingInfo {
   label: string;
   rarity: string;
   catalogNumber: string;
-  matrixNumber?: string;
 }
 
 export interface ScratchRegion {
@@ -70,6 +117,8 @@ export interface JacketRecognition {
 
 export interface LpRecognition {
   isRecord: boolean;
+  source?: string;
+  persisted?: boolean;
   confidence: number;
   signals: string[];
   surfaceScore: number;
@@ -173,7 +222,6 @@ export interface CoverAnalysisReport {
   recordImageDataUrl?: string;
   recordVideoDataUrl?: string;
   catalogNumber: string;
-  matrixNumber?: string;
   recognition: LpRecognition;
   selectedCandidate: AlbumCandidate;
   pressing: PressingInfo;
@@ -232,6 +280,7 @@ function discogsResultToCandidate(result: Record<string, unknown>, catalogNumber
   const titleText = String(result.title || 'Unknown release');
   const [artist, title] = titleText.includes(' - ') ? titleText.split(' - ', 2) : ['Unknown artist', titleText];
   const labels = Array.isArray(result.label) ? result.label : [];
+  const formats = Array.isArray(result.format) ? result.format.map(String) : [];
   return {
     id: `discogs-${String(result.id || result.resource_url || titleText)}`,
     releaseId: Number(result.id || 0),
@@ -241,6 +290,8 @@ function discogsResultToCandidate(result: Record<string, unknown>, catalogNumber
     label: labels.length > 0 ? String(labels[0]) : 'Unknown label',
     catalogNumber: String(result.catno || catalogNumber),
     country: String(result.country || 'Unknown'),
+    coverImageUrl: String(result.cover_image || result.thumb || ''),
+    pressing: formats.length ? formats.join(' · ') : undefined,
     confidence: 88,
   };
 }
@@ -301,6 +352,32 @@ export async function fetchDiscogsCandidates(catalogNumber: string, albumTitle =
   return fetchDiscogsCandidatesDirect(normalized, title, artistName);
 }
 
+async function readDiscogsResponse<T>(response: Response): Promise<T> {
+  const payload = await response.json().catch(() => ({})) as T & { detail?: string };
+  if (!response.ok) throw new Error(payload.detail || 'Discogs 정보를 불러오지 못했습니다.');
+  return payload;
+}
+
+export async function searchDiscogsAlbums(albumTitle: string, artist: string, page = 1, perPage = 10) {
+  const params = new URLSearchParams({ page: String(page), per_page: String(perPage) });
+  if (albumTitle.trim()) params.set('album_title', albumTitle.trim());
+  if (artist.trim()) params.set('artist', artist.trim());
+  const response = await fetchApi(`/discogs/albums?${params.toString()}`, {}, 12000);
+  return readDiscogsResponse<DiscogsAlbumSearchResult>(response);
+}
+
+export async function fetchRepresentativeVersions(masterId: number, refresh = false) {
+  const query = refresh ? '?refresh=true' : '';
+  const response = await fetchApi(`/discogs/masters/${masterId}/representative-versions${query}`, {}, 60000);
+  return readDiscogsResponse<DiscogsRepresentativeVersions>(response);
+}
+
+export async function fetchDiscogsVersionPage(masterId: number, offset: number, limit = 20) {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  const response = await fetchApi(`/discogs/masters/${masterId}/versions?${params.toString()}`, {}, 20000);
+  return readDiscogsResponse<DiscogsVersionPage>(response);
+}
+
 function fallbackTrackRecommendations(catalogNumber: string): TrackRecommendations {
   return {
     source: 'mock',
@@ -327,18 +404,15 @@ export async function fetchTrackRecommendations(catalogNumber: string): Promise<
   }
 }
 
-export function createPressingInfo(candidate: AlbumCandidate, matrixNumber = ''): PressingInfo {
-  const normalizedMatrix = matrixNumber.trim().toUpperCase();
-  const firstPressHint = /1A|A-1|B-1|1S|STERLING|RL/.test(normalizedMatrix);
-  const likelyFirst = candidate.id.includes('cl-1355') || candidate.id.includes('pcs-7088') || firstPressHint;
+export function createPressingInfo(candidate: AlbumCandidate): PressingInfo {
+  const likelyFirst = candidate.id.includes('cl-1355') || candidate.id.includes('pcs-7088');
   return {
     releaseCountry: candidate.country,
     releaseYear: candidate.year,
-    pressing: likelyFirst ? '초반 또는 초기 프레스로 추정' : '리이슈 또는 추가 확인 필요',
+    pressing: candidate.pressing || (likelyFirst ? '초반 또는 초기 프레스로 추정' : '리이슈 또는 추가 확인 필요'),
     label: candidate.label,
     rarity: likelyFirst ? '높음' : candidate.confidence > 85 ? '중간 이상' : '확인 필요',
     catalogNumber: candidate.catalogNumber,
-    matrixNumber: normalizedMatrix || undefined,
   };
 }
 
@@ -619,6 +693,7 @@ export function recognizeLpImage(dataUrl: string, mediaType: 'image' | 'video' =
   const scratchRegions: ScratchRegion[] = makeFallbackScratchRegions(seed, scratchCount, scratchRisk);
   return {
     isRecord: hasMedia,
+    source: 'fallback',
     confidence: hasMedia ? Math.min(90, surfaceScore + 3) : 0,
     surfaceScore,
     surfaceGrade: gradeFromScore(surfaceScore),
@@ -848,7 +923,21 @@ export async function analyzeLpMedia(dataUrl: string, mediaType: 'image' | 'vide
     formData.append('media_type', mediaType);
     const response = await fetchApi('/analysis/lp-recognition', { method: 'POST', body: formData }, 30000);
     if (!response.ok) throw new Error('LP surface analysis failed');
-    return await response.json() as LpRecognition & { persisted?: boolean; source?: string };
+    const serverResult = await response.json() as LpRecognition & { persisted?: boolean; source?: string };
+    if (serverResult.source === 'fallback') {
+      const local = await analyzeRecordSurfaceInBrowser(dataUrl, mediaType).catch(() => null);
+      if (local) {
+        return {
+          ...local,
+          source: 'browser-canvas',
+          signals: [
+            ...local.signals,
+            '서버 fallback 결과를 그대로 쓰지 않고 브라우저 프레임 분석으로 재확인했습니다.',
+          ],
+        };
+      }
+    }
+    return serverResult;
   } catch {
     const local = await analyzeRecordSurfaceInBrowser(dataUrl, mediaType).catch(() => null);
     return { ...(local || recognizeLpImage(dataUrl, mediaType)), source: local ? 'browser-canvas' : 'fallback' };
@@ -1108,18 +1197,7 @@ function fallbackAudioAnalysis(files: { good?: File; noisy?: File; ambient?: Fil
   };
 }
 
-export async function analyzeAudioSamples(files: { good?: File; noisy?: File; ambient?: File }): Promise<AudioAnalysisResult> {
-  if (!files.good && !files.noisy) {
-    return fallbackAudioAnalysis(files, '좋은 구간 또는 안 좋은 구간 녹음이 없어 정밀 분석을 실행할 수 없습니다.');
-  }
-
-  const localResult = await timeoutAfter(
-    analyzeAudioSamplesInBrowser(files),
-    9000,
-    'Local audio analysis timed out',
-  ).catch(() => null);
-  if (localResult) return localResult;
-
+async function analyzeAudioSamplesOnServer(files: { good?: File; noisy?: File; ambient?: File }) {
   const formData = new FormData();
   const [good, noisy, ambient] = await Promise.all([
     files.good ? convertAudioFileForAnalysis(files.good, 'good-section') : Promise.resolve(undefined),
@@ -1129,11 +1207,48 @@ export async function analyzeAudioSamples(files: { good?: File; noisy?: File; am
   if (good) formData.append('good_sample', good);
   if (noisy) formData.append('noisy_sample', noisy);
   if (ambient) formData.append('ambient_sample', ambient);
+  const response = await timeoutAfter(fetchApi('/analysis/audio-samples', { method: 'POST', body: formData }, 12000), 14000, 'Audio analysis timed out');
+  if (!response.ok) throw new Error('Audio analysis failed');
+  return await response.json() as AudioAnalysisResult;
+}
+
+function withAudioRecheckWarning(primary: AudioAnalysisResult, secondary: AudioAnalysisResult | null): AudioAnalysisResult {
+  if (!secondary) return primary;
+  const warnings = [...(primary.warnings || [])];
+  const scoreGap = Math.abs(Number(primary.audioScore || 0) - Number(secondary.audioScore || 0));
+  if (scoreGap >= 10 || (primary.playbackRisk && secondary.playbackRisk && primary.playbackRisk !== secondary.playbackRisk)) {
+    warnings.push(`서버와 기기 내 보조 분석 결과 차이가 있어 재확인을 권장합니다. 서버 ${primary.audioScore}점/${primary.playbackRisk || '-'}, 기기 ${secondary.audioScore}점/${secondary.playbackRisk || '-'}입니다.`);
+  }
+  return { ...primary, warnings };
+}
+
+export async function analyzeAudioSamples(files: { good?: File; noisy?: File; ambient?: File }): Promise<AudioAnalysisResult> {
+  if (!files.good && !files.noisy) {
+    return fallbackAudioAnalysis(files, '좋은 구간 또는 안 좋은 구간 녹음이 없어 정밀 분석을 실행할 수 없습니다.');
+  }
+
+  const browserResultPromise = timeoutAfter(
+    analyzeAudioSamplesInBrowser(files),
+    9000,
+    'Local audio analysis timed out',
+  ).catch(() => null);
+
   try {
-    const response = await timeoutAfter(fetchApi('/analysis/audio-samples', { method: 'POST', body: formData }, 12000), 14000, 'Audio analysis timed out');
-    if (!response.ok) throw new Error('Audio analysis failed');
-    return await response.json() as AudioAnalysisResult;
+    const serverResult = await analyzeAudioSamplesOnServer(files);
+    const browserResult = await browserResultPromise;
+    if (serverResult.source === 'fallback' && browserResult) {
+      return {
+        ...browserResult,
+        warnings: [
+          ...(browserResult.warnings || []),
+          '서버 정밀 분석이 fallback으로 내려와 기기 내 파형 분석 결과로 재확인했습니다.',
+        ],
+      };
+    }
+    return withAudioRecheckWarning(serverResult, browserResult);
   } catch {
+    const browserResult = await browserResultPromise;
+    if (browserResult) return browserResult;
     return fallbackAudioAnalysis(files, '기기 내 분석과 서버 분석이 모두 실패해 파일 정보 기반 임시 점수를 표시합니다.');
   }
 }

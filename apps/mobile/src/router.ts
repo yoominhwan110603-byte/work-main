@@ -10,6 +10,7 @@ const ResetPasswordView = () => import('@/features/auth/views/ResetPasswordView.
 const PreferenceView = () => import('@/features/auth/views/PreferenceView.vue');
 const HomeView = () => import('@/features/buyer/views/HomeView.vue');
 const SearchView = () => import('@/features/buyer/views/SearchView.vue');
+const PressingListingsView = () => import('@/features/buyer/views/PressingListingsView.vue');
 const AlbumDetailView = () => import('@/features/buyer/views/AlbumDetailView.vue');
 const FavoritesView = () => import('@/features/buyer/views/FavoritesView.vue');
 const SellView = () => import('@/features/seller/views/SellView.vue');
@@ -17,9 +18,14 @@ const CameraView = () => import('@/features/seller/views/CameraView.vue');
 const AnalysisRequestView = () => import('@/features/seller/views/AnalysisRequestView.vue');
 const AnalysisResultView = () => import('@/features/seller/views/AnalysisResultView.vue');
 const SellReportView = () => import('@/features/seller/views/SellReportView.vue');
+const CollectionLibraryView = () => import('@/features/collection/views/CollectionLibraryView.vue');
+const CollectionCreateView = () => import('@/features/collection/views/CollectionCreateView.vue');
+const CollectionDetailView = () => import('@/features/collection/views/CollectionDetailView.vue');
+const CollectionOfferView = () => import('@/features/collection/views/CollectionOfferView.vue');
 const ChatView = () => import('@/features/transaction/views/ChatView.vue');
 const CommentsView = () => import('@/features/buyer/views/CommentsView.vue');
 const PriceOfferView = () => import('@/features/buyer/views/PriceOfferView.vue');
+const BuyOrderView = () => import('@/features/buyer/views/BuyOrderView.vue');
 const OffersView = () => import('@/features/seller/views/OffersView.vue');
 const OngoingTransactionView = () => import('@/features/transaction/views/OngoingTransactionView.vue');
 const TransactionLocationView = () => import('@/features/transaction/views/TransactionLocationView.vue');
@@ -46,8 +52,10 @@ export const router = createRouter({
         { path: '', component: HomeView },
         { path: 'search', component: SearchView },
         { path: 'search/results', redirect: to => ({ path: '/app/search', query: to.query }) },
+        { path: 'pressing', component: PressingListingsView },
         { path: 'album/:id', component: AlbumDetailView },
         { path: 'favorites', component: FavoritesView },
+        { path: 'collection', component: CollectionLibraryView },
         { path: 'notifications', component: NotificationsView },
         { path: 'profile', component: ProfileView },
         { path: 'profile/:userId', component: ProfileView },
@@ -60,9 +68,14 @@ export const router = createRouter({
     { path: '/sell/analysis', component: AnalysisRequestView },
     { path: '/sell/analysis/result', component: AnalysisResultView },
     { path: '/sell/report', component: SellReportView },
+    { path: '/collection/new', component: CollectionCreateView },
+    { path: '/collection/:id/edit', component: CollectionCreateView },
+    { path: '/collection/:id', component: CollectionDetailView },
+    { path: '/collection/:id/offer', component: CollectionOfferView },
     { path: '/transaction/chat/:chatId', component: ChatView },
     { path: '/transaction/comments/:albumId', component: CommentsView },
     { path: '/transaction/offer/:albumId', component: PriceOfferView },
+    { path: '/market/buy-order/:listingId', component: BuyOrderView },
     { path: '/transaction/offers/received', component: OffersView },
     { path: '/transaction/ongoing/:transactionId', component: OngoingTransactionView },
     { path: '/transaction/location/:transactionId', component: TransactionLocationView },

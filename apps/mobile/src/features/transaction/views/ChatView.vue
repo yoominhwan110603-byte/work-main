@@ -11,17 +11,17 @@
     </header>
 
     <section class="bg-gray-50 p-3 border-b shrink-0">
-      <button class="w-full bg-white rounded-lg p-3 flex gap-3 text-left active:bg-gray-50" @click="router.push(`/app/album/${album.id}`)">
-        <VinylCover :src="album.images[0]" :alt="album.title" class="w-16 h-16 object-cover rounded-lg" />
+      <button class="w-full bg-white rounded-lg p-3 flex gap-3 text-left active:bg-gray-50" @click="openContext">
+        <VinylCover :src="contextImage" :alt="contextTitle" class="w-16 h-16 object-cover rounded-lg" />
         <div class="flex-1 min-w-0">
-          <p class="text-sm mb-1 truncate">{{ album.title }}</p>
-          <p class="text-sm text-gray-600 truncate">{{ album.artist }}</p>
-          <p class="text-sm mt-1">{{ album.price.toLocaleString() }}원</p>
+          <p class="text-sm mb-1 truncate">{{ contextTitle }}</p>
+          <p class="text-sm text-gray-600 truncate">{{ contextSubtitle }}</p>
+          <p class="text-sm mt-1">{{ isCollectionContext ? '컬렉션 문의' : `${album.price.toLocaleString()}원` }}</p>
         </div>
       </button>
     </section>
 
-    <section class="border-b bg-white p-3 shrink-0">
+    <section v-if="!isCollectionContext" class="border-b bg-white p-3 shrink-0">
       <div class="rounded-lg border p-3">
         <div class="flex items-center justify-between mb-3 gap-3">
           <div>
@@ -45,7 +45,7 @@
       </div>
     </section>
 
-    <section v-if="otherCompletionChecked && !isTradeCompleted" class="border-b bg-amber-50 px-4 py-3 text-sm text-amber-900">
+    <section v-if="!isCollectionContext && otherCompletionChecked && !isTradeCompleted" class="border-b bg-amber-50 px-4 py-3 text-sm text-amber-900">
       {{ recipient.name || '상대방' }}님이 거래 완료를 확인했습니다. 내 확인까지 완료되면 리뷰로 이동합니다.
     </section>
 
@@ -71,7 +71,7 @@
         <button class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button">
           <ImageIcon :size="16" /> 이미지
         </button>
-        <button class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button" @click="router.push(`/transaction/offer/${album.id}`)">
+        <button v-if="!isCollectionContext" class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button" @click="router.push(`/transaction/offer/${album.id}`)">
           <DollarSign :size="16" /> 가격 제안
         </button>
       </div>
@@ -117,8 +117,16 @@ const appStore = useAppStore();
 const routeChatId = computed(() => String(route.params.chatId || ''));
 const listingId = computed(() => String(route.query.listingId || listingIdFromChatId(routeChatId.value)));
 const album = computed(() => fallbackAlbum(appStore, listingId.value));
-const activeTrade = computed(() => getActiveTrade(album.value.id));
-const savedCompletion = getTradeCompletion(album.value.id);
+const collectionId = computed(() => String(route.query.collectionId || ''));
+const collection = computed(() => appStore.collections.find(item => item.id === collectionId.value));
+const isCollectionContext = computed(() => Boolean(collection.value));
+const contextId = computed(() => collection.value?.id || album.value.id);
+const contextOwner = computed(() => collection.value?.owner || album.value.seller);
+const contextTitle = computed(() => collection.value?.title || album.value.title);
+const contextSubtitle = computed(() => collection.value ? `${collection.value.artist || '아티스트 미상'} · ${collection.value.owner.name}` : album.value.artist);
+const contextImage = computed(() => collection.value?.images[0] || album.value.images[0] || '');
+const activeTrade = computed(() => isCollectionContext.value ? undefined : getActiveTrade(album.value.id));
+const savedCompletion = getTradeCompletion(contextId.value);
 const completion = reactive({
   buyerChecked: savedCompletion.buyerChecked || false,
   sellerChecked: savedCompletion.sellerChecked || false,
@@ -136,22 +144,22 @@ const recipient = computed(() => {
   if (routeRecipient.value.id) return routeRecipient.value;
   const otherMessage = [...messages.value].reverse().find(message => message.senderId !== currentUserId.value);
   if (otherMessage) return { id: otherMessage.senderId, name: otherMessage.senderName };
-  if (album.value.seller.id !== currentUserId.value) return { id: album.value.seller.id, name: album.value.seller.name };
+  if (contextOwner.value.id !== currentUserId.value) return { id: contextOwner.value.id, name: contextOwner.value.name };
   return { id: '', name: '' };
 });
 const chatId = computed(() => {
   if (routeChatId.value.includes('__dm__')) return routeChatId.value;
-  if (recipient.value.id) return makeOneToOneChatId(album.value.id, currentUserId.value, recipient.value.id);
-  return routeChatId.value || album.value.id;
+  if (recipient.value.id) return makeOneToOneChatId(contextId.value, currentUserId.value, recipient.value.id);
+  return routeChatId.value || contextId.value;
 });
-const chatTitle = computed(() => recipient.value.name || album.value.seller.name || '채팅');
+const chatTitle = computed(() => recipient.value.name || contextOwner.value.name || '채팅');
 const inputMessage = ref('');
 const isLoading = ref(false);
 const socketStatus = ref<'connecting' | 'open' | 'closed' | 'error'>('connecting');
 const messageList = ref<HTMLElement | null>(null);
 const reviewOpened = ref(false);
 const isTradeCompleted = computed(() => completion.buyerChecked && completion.sellerChecked);
-const isSeller = computed(() => album.value.seller.id === currentUserId.value);
+const isSeller = computed(() => contextOwner.value.id === currentUserId.value);
 const myCompletionChecked = computed(() => isSeller.value ? completion.sellerChecked : completion.buyerChecked);
 const otherCompletionChecked = computed(() => isSeller.value ? completion.buyerChecked : completion.sellerChecked);
 const myCompletionLabel = computed(() => myCompletionChecked.value ? '내 확인 완료' : (isSeller.value ? '판매자 확인' : '구매자 확인'));
@@ -175,6 +183,10 @@ const completionButtonClass = (checked: boolean) => [
 ];
 
 const formatTime = (timestamp: string) => new Date(timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+const openContext = () => {
+  if (collection.value) router.push(`/collection/${collection.value.id}`);
+  else router.push(`/app/album/${album.value.id}`);
+};
 
 const scrollToBottom = async () => {
   await nextTick();
@@ -183,7 +195,7 @@ const scrollToBottom = async () => {
 
 const applyTradeConfirmation = (message: RealtimeChatMessage) => {
   if (message.type === 'trade-confirmation') {
-    if (message.senderId === album.value.seller.id) completion.sellerChecked = true;
+    if (message.senderId === contextOwner.value.id) completion.sellerChecked = true;
     else completion.buyerChecked = true;
   }
 };
@@ -204,7 +216,7 @@ const connectSocket = () => {
   manuallyClosed = false;
   if (socket) socket.close();
   socketStatus.value = 'connecting';
-  socket = openChatSocket(chatId.value, currentUserId.value, { listingId: album.value.id, recipientId: recipient.value.id });
+  socket = openChatSocket(chatId.value, currentUserId.value, { listingId: contextId.value, recipientId: recipient.value.id });
 
   socket.onopen = () => { socketStatus.value = 'open'; };
   socket.onmessage = (event) => {
@@ -248,7 +260,7 @@ const send = async () => {
     senderName: currentUserName.value,
     recipientId: recipient.value.id,
     recipientName: recipient.value.name,
-    listingId: album.value.id,
+    listingId: contextId.value,
     message: content,
   };
   if (socket && socket.readyState === WebSocket.OPEN) {
@@ -269,7 +281,7 @@ const sendTradeConfirmationMessage = async () => {
     senderName: currentUserName.value,
     recipientId: recipient.value.id,
     recipientName: recipient.value.name,
-    listingId: album.value.id,
+    listingId: contextId.value,
     message: `${currentUserName.value}님이 거래 완료를 확인했습니다.`,
     messageType: 'trade-confirmation',
   };
@@ -292,12 +304,12 @@ const confirmMySide = () => {
 };
 
 watch(completion, () => {
-  saveTradeCompletion(album.value.id, { ...completion, completedAt: isTradeCompleted.value ? (completion.completedAt || new Date().toISOString()) : completion.completedAt });
+  saveTradeCompletion(contextId.value, { ...completion, completedAt: isTradeCompleted.value ? (completion.completedAt || new Date().toISOString()) : completion.completedAt });
   if (isTradeCompleted.value) {
-    completeActiveTrade(album.value.id);
+    completeActiveTrade(contextId.value);
     if (!reviewOpened.value) {
       reviewOpened.value = true;
-      setTimeout(() => router.push(`/transaction/review/${album.value.id}`), 500);
+      setTimeout(() => router.push(`/transaction/review/${contextId.value}`), 500);
     }
   }
 }, { deep: true });

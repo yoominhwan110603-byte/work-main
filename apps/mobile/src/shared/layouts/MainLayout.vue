@@ -1,8 +1,8 @@
 <template>
-  <div class="size-full flex flex-col bg-white">
-    <main class="flex-1 overflow-y-auto">
+  <div class="size-full flex flex-col bg-background text-foreground">
+    <main class="relative flex-1 overflow-hidden bg-background">
       <RouterView v-slot="{ Component, route }">
-        <Transition name="page-slide" mode="out-in">
+        <Transition name="page-slide">
           <component :is="Component" :key="route.fullPath" />
         </Transition>
       </RouterView>

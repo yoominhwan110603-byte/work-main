@@ -2,7 +2,7 @@
   <div class="size-full flex flex-col items-center justify-center bg-gradient-to-br from-blue-600 to-purple-700 text-white px-8">
     <div class="flex-1 flex flex-col items-center justify-center">
       <Disc3 :size="120" class="mb-8 animate-spin" style="animation-duration: 3s" />
-      <h1 class="text-4xl mb-2">Vinyl-Check</h1>
+      <h1 class="text-4xl mb-2 text-[#f7d982]">Vinyl-Check</h1>
       <p class="text-lg opacity-90">1:1 중고 LP 거래 플랫폼</p>
       <p class="text-sm mt-4 opacity-75 text-center">
         음질 분석 기반의 신뢰할 수 있는<br />LP 거래 경험을 시작하세요

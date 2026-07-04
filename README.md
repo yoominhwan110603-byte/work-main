@@ -48,6 +48,16 @@ VITE_GOOGLE_CLIENT_ID=your_web_application_client_id.apps.googleusercontent.com
 VITE_GOOGLE_ANDROID_CLIENT_ID=your_android_client_id.apps.googleusercontent.com
 ```
 
+## Kakao Map setup
+
+Create or open an app at [Kakao Developers](https://developers.kakao.com), then enable Kakao Map in the app settings. For the mobile Vite app, copy the JavaScript key from `[App] > [Platform key]` and register the JavaScript SDK domain for the dev/prod origin you use.
+
+Add the JavaScript key to `apps/mobile/.env.local`:
+
+```env
+VITE_KAKAO_MAP_JAVASCRIPT_KEY=your_kakao_javascript_key
+```
+
 For backend token audience checking, start the backend with the web client id:
 
 ```powershell

@@ -32,6 +32,11 @@ class FindIdRequest(BaseModel):
     email: str
 
 
+class FindIdConfirm(BaseModel):
+    email: str
+    code: str
+
+
 class EmailVerificationRequest(BaseModel):
     email: str
 
@@ -50,14 +55,14 @@ class PasswordResetConfirm(BaseModel):
     password: str
 
 
-class AddressApiKeyUpsert(BaseModel):
-    apiKey: str
-
-
 class ListingCreate(BaseModel):
     title: str
     artist: str | None = None
     catalog_number: str | None = None
+    discogs_release_id: int | None = None
+    discogs_cover_image_url: str | None = None
+    release_label: str | None = None
+    release_country: str | None = None
     price: int
     description: str | None = None
     tags: list[str] = []
@@ -141,3 +146,88 @@ class OfferCreate(BaseModel):
 
 class OfferStatusUpdate(BaseModel):
     status: str
+
+
+class BuyOrderCreate(BaseModel):
+    buyer_id: str
+    listing_id: str | None = None
+    market_key: str | None = None
+    max_price: int
+    min_media_grade: str = "G"
+    min_sleeve_grade: str = "G"
+    pressing_condition: str | None = None
+    is_first_press_only: bool = False
+    region_preference: str | None = None
+    status: str = "active"
+
+
+class InstantSellRequest(BaseModel):
+    seller_id: str | None = None
+
+
+class WishlistCreate(BaseModel):
+    listing_id: str | None = None
+    market_key: str | None = None
+    title: str | None = None
+    artist: str | None = None
+    catalog_number: str | None = None
+    discogs_release_id: int | None = None
+    cover_image_url: str | None = None
+    release_label: str | None = None
+    release_country: str | None = None
+    year: int | None = None
+    pressing_condition: str | None = None
+    visibility: str = "private"
+
+
+class WishlistUpdate(BaseModel):
+    title: str | None = None
+    artist: str | None = None
+    catalog_number: str | None = None
+    discogs_release_id: int | None = None
+    cover_image_url: str | None = None
+    release_label: str | None = None
+    release_country: str | None = None
+    year: int | None = None
+    pressing_condition: str | None = None
+    visibility: str | None = None
+
+
+class CollectionCreate(BaseModel):
+    title: str
+    artist: str = ""
+    year: int = 0
+    genre: str = "기타"
+    catalogNumber: str = ""
+    discogsReleaseId: int | None = None
+    discogsCoverImageUrl: str | None = None
+    releaseLabel: str | None = None
+    releaseCountry: str | None = None
+    pressingInfo: str | None = None
+    ownershipStatus: str = "owned"
+    purchasePrice: int | None = None
+    notes: str = ""
+    tags: list[str] = []
+    images: list[str] = []
+    coverImageDataUrl: str | None = None
+    recordImageDataUrl: str | None = None
+    recordVideoDataUrl: str | None = None
+    audioGrade: str | None = None
+    audioScore: int | None = None
+    jacketGrade: str | None = None
+    jacketScore: int | None = None
+    isRare: bool = False
+    isFirstPress: bool = False
+    audioSamples: dict[str, Any] = {}
+    visibility: str = "public"
+
+
+class CollectionUpdate(CollectionCreate):
+    pass
+
+
+class CollectionOfferCreate(BaseModel):
+    collectionId: str
+    buyerId: str
+    buyerName: str
+    offerPrice: int

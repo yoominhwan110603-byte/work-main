@@ -8,46 +8,40 @@
         <h1 class="truncate text-lg font-semibold">{{ isEditing ? '판매글 수정' : '판매 등록' }}</h1>
       </div>
       <button
-        :disabled="!valid || publishSaving"
-        :class="['shrink-0 rounded-lg px-3 py-2 text-sm sm:px-4', valid && !publishSaving ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-400']"
-        @click="publishListingAction"
+        :disabled="currentSellStep === 'publish' && (!valid || publishSaving)"
+        :class="[
+          'shrink-0 rounded-lg px-3 py-2 text-sm sm:px-4',
+          currentSellStep !== 'publish' || (valid && !publishSaving) ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-400',
+        ]"
+        @click="currentSellStep === 'publish' ? publishListingAction() : goNextSellStep()"
       >
-        {{ publishSaving ? (isEditing ? '수정 중' : '게시 중') : (isEditing ? '수정' : '게시') }}
+        {{ currentSellStep === 'publish' ? (publishSaving ? (isEditing ? '수정 중' : '게시 중') : (isEditing ? '수정' : '게시')) : '다음' }}
       </button>
     </header>
 
+    <nav class="shrink-0 border-b bg-white px-3 py-3 sm:px-4" aria-label="판매 등록 단계">
+      <div class="grid grid-cols-4 gap-2">
+        <button
+          v-for="(step, index) in sellSteps"
+          :key="step.id"
+          type="button"
+          :class="['min-w-0 rounded-lg border px-2 py-2 text-center text-xs', currentSellStep === step.id ? 'border-blue-600 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500']"
+          @click="goToSellStep(step.id)"
+        >
+          <span class="block font-semibold">{{ index + 1 }}</span>
+          <span class="mt-0.5 block truncate">{{ step.label }}</span>
+        </button>
+      </div>
+    </nav>
+
     <section class="flex-1 overflow-y-auto px-3 py-4 pb-8 sm:p-4 sm:pb-8 space-y-5 sm:space-y-6">
-      <section class="space-y-3">
+      <section v-show="currentSellStep === 'media'" class="space-y-3">
         <div class="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-          <h2 class="text-base font-medium">사진과 표면 분석</h2>
-          <span class="text-xs text-gray-500">LP 여부가 아니라 판매 신뢰용 감정</span>
+          <h2 class="text-base font-medium">사진 등록</h2>
+          <span class="text-xs text-gray-500">대표 이미지는 검사하지 않습니다</span>
         </div>
 
-        <PhotoSlot title="대표 이미지" help="판매글 목록에 보일 앨범 커버" :image="coverImage" @picked="file => setImage('cover', file)" @clear="clearImage('cover')" />
-
-        <div v-if="coverImage" class="rounded-lg border p-3 text-sm">
-          <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div class="min-w-0">
-              <p class="font-medium">자켓 상태 분석</p>
-              <p class="text-gray-500 mt-1">{{ jacketRecognition.recommendation }}</p>
-              <p v-if="jacketNeedsRetake" class="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-900">반사나 낮은 신뢰도 때문에 재촬영을 권장합니다. 이 결과는 판매 설명에 참고용으로 반영됩니다.</p>
-            </div>
-            <div class="flex shrink-0 flex-wrap gap-1 sm:block sm:space-y-1 sm:text-right">
-              <span class="inline-block px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-700">
-                {{ jacketRecognition.jacketGrade }} · {{ jacketRecognition.jacketScore }}점
-              </span>
-              <span :class="['block px-2 py-1 rounded text-xs', jacketNeedsRetake ? 'bg-amber-100 text-amber-800' : 'bg-gray-100 text-gray-700']">{{ jacketAnalysisBadge }}</span>
-            </div>
-          </div>
-          <div class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">테두리</p><p>{{ riskLabel(jacketRecognition.edgeWearRisk) }}</p></div>
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">모서리</p><p>{{ riskLabel(jacketRecognition.cornerWearRisk) }}</p></div>
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">색 바램</p><p>{{ riskLabel(jacketRecognition.colorFadeRisk) }}</p></div>
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">반사</p><p>{{ formatPercent(jacketRecognition.glareRatio) }}</p></div>
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">선명도</p><p>{{ formatMetric(jacketRecognition.blurVariance) }}</p></div>
-            <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">신뢰도</p><p>{{ jacketRecognition.confidence }}점</p></div>
-          </div>
-        </div>
+        <PhotoSlot title="대표 이미지" help="판매글 목록에 보일 이미지" :image="coverImage" @picked="file => setImage('cover', file)" @clear="clearImage('cover')" />
 
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <PhotoSlot title="표면 이미지" help="원형 가이드에 맞춰 촬영" :image="recordImage" @picked="file => setImage('record', file)" @clear="clearImage('record')" @open-camera="openSurfaceCamera('image')" />
@@ -90,13 +84,23 @@
             <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">홈 대비</p><p>{{ formatPercent(recordRecognition.scratchDetails?.grooveContrast) }}</p></div>
             <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">선명도</p><p>{{ formatMetric(recordRecognition.scratchDetails?.blurVariance) }}</p></div>
           </div>
+          <ScratchInspectionPreview
+            v-if="recordRecognition.scratchRegions.length"
+            class="mt-3"
+            :media-url="recordMediaPreview"
+            :media-type="recordInspectionMediaType"
+            :regions="recordRecognition.scratchRegions"
+          />
           <div v-if="recordRecognition.scratchRegions.length" class="mt-3 rounded-lg bg-gray-950 text-white p-2 text-xs">
             스크래치 위치 후보 {{ recordRecognition.scratchRegions.length }}개가 감지되었습니다. 조명 반사와 먼지 가능성이 있어 판매 전 육안 확인을 함께 권장합니다.
           </div>
+          <p v-if="recordRecognition.scratchRegions.length" class="mt-2 text-xs text-gray-500">
+            빨간색·주황색·노란색 선은 분석 후보이며, 반사나 먼지 가능성은 육안으로 함께 확인해 주세요.
+          </p>
         </div>
       </section>
 
-      <section class="space-y-4">
+      <section v-show="currentSellStep === 'details'" class="space-y-4">
         <h2 class="text-base font-medium">판매 정보</h2>
         <div>
           <label class="block text-sm mb-2">카탈로그 번호 *</label>
@@ -117,7 +121,8 @@
           </div>
           <div class="space-y-2">
             <button v-for="candidate in catalogCandidates" :key="candidate.id" type="button" :class="['w-full text-left rounded-lg border p-3', selectedCandidateId === candidate.id ? 'border-blue-600 bg-blue-50' : 'border-gray-200 bg-white']" @click="selectCatalogCandidate(candidate.id)">
-              <p class="text-sm font-medium">{{ candidate.title }}</p>
+              <p :class="['text-base font-semibold', selectedCandidateId === candidate.id ? 'text-blue-700' : 'text-gray-900']">{{ candidate.catalogNumber || '카탈로그 번호 미상' }}</p>
+              <p class="mt-1 text-sm">{{ candidate.title }}</p>
               <p class="text-xs text-gray-500 mt-1">{{ candidate.artist }} · {{ candidate.label }} · {{ candidate.country }} {{ candidate.year || '' }}</p>
             </button>
           </div>
@@ -134,13 +139,9 @@
           <label class="block text-sm mb-2">아티스트</label>
           <input v-model="form.artist" type="text" class="w-full px-4 py-3 border rounded-lg" placeholder="아티스트명" />
         </div>
-        <div>
-          <label class="block text-sm mb-2">매트릭스 번호</label>
-          <input v-model="form.matrixNumber" type="text" class="w-full px-4 py-3 border rounded-lg" placeholder="예: XLP47324-1A, YEX 749-2" />
-        </div>
       </section>
 
-      <section class="space-y-3">
+      <section v-show="currentSellStep === 'audio'" class="space-y-3">
         <h2 class="text-base font-medium">음질 녹음 분석</h2>
         <div class="rounded-lg border border-indigo-100 bg-indigo-50 p-3 text-sm">
           <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -183,7 +184,9 @@
           주변음 기준 샘플이 저장되었습니다. 이 값으로 마이크/방 소음을 빼고 LP 자체 잡음을 더 보수적으로 계산합니다.
         </div>
         <AudioRecorder kind="good" :name="goodAudioName" :url="goodAudioUrl" :is-recording="recordingKind === 'good'" :seconds="recordingSeconds" description="좋은 구간 녹음" @start="startAudioRecording('good')" @stop="stopAudioRecording" @clear="clearAudio('good')" />
+        <p v-if="goodAudioRecordedAt" class="rounded-lg bg-green-50 p-3 text-xs text-green-800">좋은 구간 샘플 녹음일 {{ formatRecordedDate(goodAudioRecordedAt) }}</p>
         <AudioRecorder kind="noisy" :name="noisyAudioName" :url="noisyAudioUrl" :is-recording="recordingKind === 'noisy'" :seconds="recordingSeconds" description="안 좋은 구간 녹음" @start="startAudioRecording('noisy')" @stop="stopAudioRecording" @clear="clearAudio('noisy')" />
+        <p v-if="noisyAudioRecordedAt" class="rounded-lg bg-yellow-50 p-3 text-xs text-yellow-900">확인 구간 샘플 녹음일 {{ formatRecordedDate(noisyAudioRecordedAt) }}</p>
 
         <div v-if="goodAudioName" class="rounded-lg bg-green-50 p-3 text-xs text-green-800">
           좋은 구간은 {{ scratchAudioRecommendation.good.recordSeconds }}초 권장 길이로 저장됩니다. 분석은 실제 녹음 파일 전체를 기준으로 실행됩니다.
@@ -246,7 +249,7 @@
         </div>
       </section>
 
-      <section class="space-y-4">
+      <section v-show="currentSellStep === 'publish'" class="space-y-4">
         <h2 class="text-base font-medium">게시 정보</h2>
         <div>
           <label class="block text-sm mb-2">판매 가격 *</label>
@@ -255,29 +258,62 @@
             <button type="button" class="w-full px-4 py-3 border rounded-lg whitespace-nowrap text-sm text-blue-600 sm:w-auto" @click="recommendPrice">추천 가격</button>
           </div>
           <p v-if="priceMessage" class="mt-2 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">{{ priceMessage }}</p>
+          <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm space-y-3">
+            <div class="flex items-center justify-between gap-3">
+              <p class="font-medium text-blue-950">시세 기반 가격 제한</p>
+              <button type="button" class="rounded-lg bg-white px-3 py-2 text-xs text-blue-600 disabled:text-gray-300" :disabled="marketLoading" @click="refreshMarketEstimate(false)">
+                {{ marketLoading ? '확인 중' : '시세 확인' }}
+              </button>
+            </div>
+            <div v-if="marketEstimate" class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
+              <div class="rounded bg-white p-2"><p class="text-gray-500">기준가</p><p>{{ formatWon(marketEstimate.basePrice) }}</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">하한가</p><p>{{ formatWon(marketEstimate.minPrice) }}</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">즉시 판매가</p><p>{{ formatWon(marketEstimate.instantSalePrice) }}</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">구매 대기</p><p>{{ marketEstimate.metrics.buyOrderCount }}건</p></div>
+              <div class="rounded bg-white p-2"><p class="text-gray-500">위시 대기</p><p>{{ marketEstimate.metrics.wishlistCount || 0 }}명</p></div>
+            </div>
+            <div v-if="marketEstimate" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p :class="['text-xs', marketPriceTone]">{{ marketPriceStatus }}</p>
+              <button type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-xs text-white" @click="applyMarketRecommendedPrice">
+                추천가 적용
+              </button>
+            </div>
+            <p v-if="marketError" class="rounded-lg bg-red-50 p-2 text-xs text-red-700">{{ marketError }}</p>
+          </div>
         </div>
         <div>
           <label class="block text-sm mb-2">거래 주소</label>
-          <div class="flex flex-col gap-2 sm:flex-row">
-            <input v-model="form.location" type="text" class="flex-1 min-w-0 px-4 py-3 border rounded-lg" placeholder="예: 강남역, 홍대입구, 서울시청" @keydown.enter.prevent="searchAddress" @change="saveDraft(false)" />
-            <button type="button" class="inline-flex w-full items-center justify-center gap-1 px-4 py-3 border rounded-lg whitespace-nowrap text-sm text-blue-600 disabled:text-gray-300 sm:w-auto" :disabled="isAddressSearching || form.location.trim().length < 2" @click="searchAddress">
-              <Search :size="16" />
-              <span>{{ isAddressSearching ? '검색 중' : '주소 검색' }}</span>
+          <input v-model="form.location" type="text" class="w-full px-4 py-3 border rounded-lg" placeholder="예: 강남역, 홍대입구, 서울시청" @change="saveDraft(false)" />
+          <p class="mt-1 text-xs text-gray-500">주소를 입력하거나 지도에서 핀 위치를 직접 선택하세요.</p>
+          <div
+            class="relative mt-3 h-56 touch-none overflow-hidden rounded-lg border bg-gray-100"
+            @pointerdown="startFallbackMapDrag"
+            @pointermove="moveFallbackMapDrag"
+            @pointerup="endFallbackMapDrag"
+            @pointercancel="endFallbackMapDrag"
+            @pointerleave="endFallbackMapDrag"
+          >
+            <div ref="locationMapContainer" class="absolute inset-0"></div>
+            <div v-if="locationMapFallbackHtml" class="absolute inset-0" v-html="locationMapFallbackHtml"></div>
+            <div v-if="locationMapMessage" class="absolute inset-x-2 bottom-2 z-10 flex items-center gap-2 rounded-lg bg-white/95 px-3 py-2 text-xs text-gray-600 shadow-sm">
+              <MapPin :size="14" class="shrink-0 text-blue-600" />
+              <span>{{ locationMapMessage }}</span>
+            </div>
+            <button
+              v-if="locationMapPoint"
+              type="button"
+              class="absolute right-2 top-2 z-10 rounded-lg bg-blue-600 px-3 py-2 text-xs text-white shadow-sm active:bg-blue-700"
+              @click.stop="chooseMapLocation"
+            >
+              이 위치 선택
             </button>
+            <div v-if="locationMapFallbackHtml" class="absolute left-2 top-2 z-10 flex overflow-hidden rounded-lg bg-white shadow-sm">
+              <button type="button" class="px-3 py-2 text-base font-semibold active:bg-gray-100" @click.stop="zoomFallbackMap(1)">+</button>
+              <button type="button" class="border-l px-3 py-2 text-base font-semibold active:bg-gray-100" @click.stop="zoomFallbackMap(-1)">-</button>
+            </div>
           </div>
-          <p v-if="addressLookupMessage" class="mt-2 rounded-lg bg-blue-50 p-3 text-xs text-blue-700">{{ addressLookupMessage }}</p>
-          <div v-if="addressCandidates.length" class="mt-2 space-y-2">
-            <button v-for="candidate in addressCandidates" :key="candidate.id" type="button" class="w-full rounded-lg border border-gray-200 bg-white p-3 text-left active:bg-gray-50" @click="selectAddressCandidate(candidate)">
-              <span class="flex items-start gap-2">
-                <MapPin :size="16" class="mt-0.5 shrink-0 text-blue-600" />
-                <span class="min-w-0">
-                  <span class="block text-sm font-medium text-gray-900">{{ candidate.placeName || candidate.roadAddress || candidate.jibunAddress || candidate.address }}</span>
-                  <span class="mt-1 block text-xs text-gray-500">{{ candidate.roadAddress || candidate.jibunAddress }}{{ candidate.category ? ` · ${candidate.category}` : '' }}</span>
-                </span>
-              </span>
-            </button>
-          </div>
-          <p class="mt-1 text-xs text-gray-500">카카오 지도 검색 결과를 선택하면 거래 장소와 검색 필터에 표시됩니다.</p>
         </div>
         <div>
           <div class="flex items-center justify-between mb-2">
@@ -292,16 +328,19 @@
         </div>
       </section>
 
-      <section class="rounded-lg border p-3 space-y-3">
+      <section v-show="currentSellStep === 'publish'" class="rounded-lg border p-3 space-y-3">
         <h2 class="text-base font-medium">감정 요약</h2>
         <div class="grid grid-cols-2 gap-2 text-xs">
           <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">표면</p><p>{{ recordRecognition.surfaceScore || '-' }}점</p></div>
           <div class="rounded bg-gray-50 p-2"><p class="text-gray-500">음질</p><p>{{ audioAnalysis?.audioScore || '-' }}점</p></div>
         </div>
         <label class="flex items-start gap-2 text-sm">
-          <input v-model="form.analysisConfirmed" type="checkbox" true-value="true" false-value="" class="mt-1" />
+          <input v-model="form.analysisConfirmed" type="checkbox" true-value="true" false-value="" class="mt-1" :disabled="!canCheckAnalysis" />
           <span>감정 결과는 판매 신뢰를 높이기 위한 참고 자료이며, 실제 재생과 육안 확인을 함께 안내하겠습니다.</span>
         </label>
+        <p v-if="!canCheckAnalysis" class="rounded-lg bg-amber-50 p-2 text-xs text-amber-900">
+          표면 스크래치 분석과 정밀 음질 분석을 모두 완료해야 감정 확인을 체크할 수 있습니다.
+        </p>
         <button type="button" class="w-full py-3 rounded-lg border" :disabled="draftSaving" @click="saveDraft(true)">
           {{ draftSaving ? '저장 중' : '임시 저장' }}
         </button>
@@ -321,36 +360,92 @@
         <p v-if="draftMessage" :class="['text-xs text-center', draftSavedToDb ? 'text-green-600' : 'text-amber-600']">{{ draftMessage }}</p>
       </section>
     </section>
+
+    <footer class="shrink-0 border-t bg-white p-3 sm:p-4">
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          class="rounded-lg border border-gray-300 py-3 text-sm text-gray-700 disabled:text-gray-300"
+          :disabled="currentSellStepIndex === 0"
+          @click="goPreviousSellStep"
+        >
+          이전
+        </button>
+        <button
+          v-if="currentSellStep !== 'publish'"
+          type="button"
+          class="rounded-lg bg-blue-600 py-3 text-sm text-white"
+          @click="goNextSellStep"
+        >
+          다음
+        </button>
+        <button
+          v-else
+          type="button"
+          :disabled="!valid || publishSaving"
+          :class="['rounded-lg py-3 text-sm', valid && !publishSaving ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-400']"
+          @click="publishListingAction"
+        >
+          {{ publishSaving ? (isEditing ? '수정 중' : '게시 중') : (isEditing ? '수정' : '게시') }}
+        </button>
+      </div>
+    </footer>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, defineComponent, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch, type PropType } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, MapPin, Mic, Search, Upload, Video } from 'lucide-vue-next';
+import { ArrowLeft, MapPin, Mic, Upload, Video } from 'lucide-vue-next';
 import {
-  analyzeJacketImage,
   analyzeLpMedia,
-  recognizeJacketImage,
   recognizeLpImage,
-  type JacketRecognition,
   type LpRecognition,
   type ScratchRegion,
 } from '@/features/seller/services/analysis';
 import { createPressingInfo, fetchDiscogsCandidates, type AlbumCandidate } from '@/features/seller/services/discogs';
 import { analyzeAudioSamples, type AudioAnalysisResult } from '@/features/seller/services/audio';
-import { fetchPriceRecommendation } from '@/features/seller/services/pricing';
-import { fetchAddressCandidates, type AddressCandidate } from '@/features/seller/services/addressLookup';
+import { fetchMarketPriceEstimate, fetchPriceRecommendation } from '@/features/seller/services/pricing';
+import type { MarketPriceEstimate } from '@/shared/models/market';
 import { useAppStore, type ListingDraftEntry } from '@/shared/stores/appStore';
 import { openAppPermissionSettings } from '@/shared/services/appSettings';
 import { canUseNativeAudioRecorder, startNativeAudioRecording, stopNativeAudioRecording } from '@/features/seller/services/nativeAudioRecorder';
 import { setPendingSellDraft, takePendingCapture, takePendingSellDraft } from '@/features/seller/services/captureTransfer';
+import {
+  findKakaoMapPoint,
+  getKakaoMapJavaScriptKey,
+  loadKakaoMaps,
+  type KakaoMapInstance,
+  type KakaoMapPoint,
+  type KakaoMarkerInstance,
+} from '@/shared/services/kakaoMap';
+import { fetchApi } from '@/shared/services/api';
 
 const router = useRouter();
 const route = useRoute();
 const store = useAppStore();
 const editingListingId = computed(() => String(route.params.id || ''));
 const isEditing = computed(() => Boolean(editingListingId.value));
+const sourceCollectionId = computed(() => String(route.query.collectionId || ''));
+const isCollectionConversion = computed(() => Boolean(sourceCollectionId.value));
+type SellStep = 'media' | 'details' | 'audio' | 'publish';
+const sellSteps: Array<{ id: SellStep; label: string }> = [
+  { id: 'media', label: '사진' },
+  { id: 'details', label: '정보' },
+  { id: 'audio', label: '음질' },
+  { id: 'publish', label: '게시' },
+];
+const currentSellStep = ref<SellStep>('media');
+const currentSellStepIndex = computed(() => sellSteps.findIndex(step => step.id === currentSellStep.value));
+const goToSellStep = (step: SellStep) => { currentSellStep.value = step; };
+const goNextSellStep = () => {
+  const next = sellSteps[Math.min(sellSteps.length - 1, currentSellStepIndex.value + 1)];
+  if (next) currentSellStep.value = next.id;
+};
+const goPreviousSellStep = () => {
+  const previous = sellSteps[Math.max(0, currentSellStepIndex.value - 1)];
+  if (previous) currentSellStep.value = previous.id;
+};
 const pendingSellDraft = isEditing.value ? null : takePendingSellDraft();
 const restoredPendingSellDraft = Boolean(pendingSellDraft);
 const draft = isEditing.value ? null : (pendingSellDraft || store.readDraft());
@@ -363,7 +458,6 @@ const form = reactive({
   title: String(draftForm.title || ''),
   artist: String(draftForm.artist || ''),
   catalogNumber: String(draftForm.catalogNumber || ''),
-  matrixNumber: String(draftForm.matrixNumber || ''),
   price: String(draftForm.price || ''),
   location: String(draftForm.location || store.settings.trade.defaultLocation || ''),
   description: String(draftForm.description || ''),
@@ -376,7 +470,6 @@ const coverImage = ref(draftCoverImage);
 const recordImage = ref(draftRecordImage);
 const extraImages = ref<string[]>(draftImages.slice(2, 5));
 const recordVideo = ref(String(draft?.recordVideoDataUrl || ''));
-const jacketRecognition = ref<JacketRecognition>((draft?.jacketRecognition as JacketRecognition | null) || recognizeJacketImage(draftCoverImage));
 const ambientAudioFile = ref<File | null>(null);
 const goodAudioFile = ref<File | null>(null);
 const noisyAudioFile = ref<File | null>(null);
@@ -386,6 +479,8 @@ const noisyAudioName = ref(String(draft?.noisyAudioFileName || ''));
 const ambientAudioDataUrl = ref(String(draft?.ambientAudioDataUrl || ''));
 const goodAudioDataUrl = ref(String(draft?.goodAudioDataUrl || ''));
 const noisyAudioDataUrl = ref(String(draft?.noisyAudioDataUrl || ''));
+const goodAudioRecordedAt = ref(String(draft?.goodAudioRecordedAt || ''));
+const noisyAudioRecordedAt = ref(String(draft?.noisyAudioRecordedAt || ''));
 const ambientAudioUrl = ref(ambientAudioDataUrl.value);
 const goodAudioUrl = ref(goodAudioDataUrl.value);
 const noisyAudioUrl = ref(noisyAudioDataUrl.value);
@@ -407,9 +502,9 @@ let recordingUsesNative = false;
 const audioAnalysis = ref<AudioAnalysisResult | null>((draft?.audioAnalysis as AudioAnalysisResult | null) || null);
 const recordRecognition = ref<LpRecognition>(recognizeLpImage(recordImage.value || recordVideo.value));
 const priceMessage = ref('');
-const addressCandidates = ref<AddressCandidate[]>([]);
-const addressLookupMessage = ref('');
-const addressLookupSource = ref<'kakao' | ''>('');
+const marketEstimate = ref<MarketPriceEstimate | null>(null);
+const marketLoading = ref(false);
+const marketError = ref('');
 const catalogLookupMessage = ref('');
 const catalogApiStatus = ref('');
 const draftMessage = ref('');
@@ -421,27 +516,39 @@ const catalogCandidates = ref<AlbumCandidate[]>([]);
 const selectedCandidateId = ref('');
 const candidateSource = ref<'discogs' | 'discogs-direct' | 'mock' | ''>('');
 const isCatalogSearching = ref(false);
-const isAddressSearching = ref(false);
 let catalogLookupRequest = 0;
-let addressLookupRequest = 0;
+const locationMapContainer = ref<HTMLElement | null>(null);
+const locationMapMessage = ref('');
+const locationMapPoint = ref<KakaoMapPoint | null>(null);
+const locationMapFallbackHtml = ref('');
+const locationMapZoom = ref(15);
+let locationMap: KakaoMapInstance | null = null;
+let locationMarker: KakaoMarkerInstance | null = null;
+let locationMapRequest = 0;
+let locationMapTimer: number | undefined;
+let fallbackDrag:
+  | { pointerId: number; startX: number; startY: number; startLat: number; startLng: number; moved: boolean }
+  | null = null;
+const fallbackPointers = new Map<number, { x: number; y: number }>();
+let fallbackPinch:
+  | { startDistance: number; startZoom: number; lastZoom: number }
+  | null = null;
 
 const recordMediaPreview = computed(() => recordImage.value || recordVideo.value);
+const recordInspectionMediaType = computed<'image' | 'video'>(() => recordImage.value ? 'image' : 'video');
 const selectedCandidate = computed(() => catalogCandidates.value.find(candidate => candidate.id === selectedCandidateId.value));
 const riskLabel = (risk?: 'low' | 'medium' | 'high' | string) => risk === 'high' ? '높음' : risk === 'medium' ? '주의' : '낮음';
 const formatDb = (value?: number | null) => typeof value === 'number' ? `${value.toFixed(1)} dB` : '-';
 const formatPercent = (value?: number | null) => typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '-';
 const formatMetric = (value?: number | null, digits = 1) => typeof value === 'number' ? value.toFixed(digits) : '-';
+const formatWon = (value?: number | null) => typeof value === 'number' && value > 0 ? `${value.toLocaleString()}원` : '-';
+const formatRecordedDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
 const isReferenceAudioAnalysis = computed(() => Boolean(audioAnalysis.value && (
   audioAnalysis.value.source === 'fallback'
   || audioAnalysis.value.source === 'mock'
   || Number(audioAnalysis.value.analysisConfidence || 0) < 60
 )));
 const audioAnalysisBadge = computed(() => isReferenceAudioAnalysis.value ? '참고용 분석' : '정밀 분석');
-const jacketNeedsRetake = computed(() => Boolean(coverImage.value && (
-  jacketRecognition.value.glareRisk === 'high'
-  || Number(jacketRecognition.value.confidence || 0) < 65
-)));
-const jacketAnalysisBadge = computed(() => jacketNeedsRetake.value ? '재촬영 권장' : jacketRecognition.value.source === 'server' ? '서버 분석' : '참고용 분석');
 const recordVideoGuides = [
   '밝은 곳에서 LP 표면 전체가 보이도록 8~12초 정도 천천히 촬영하세요.',
   '카메라를 살짝 움직여 반사 위치가 이동하게 찍으면 스크래치와 먼지 구분이 쉬워집니다.',
@@ -506,8 +613,12 @@ const scratchAudioRecommendation = computed(() => {
     },
   };
 });
-const canStartAnalysis = computed(() => Boolean(recordMediaPreview.value && form.catalogNumber.trim()));
-const valid = computed(() => Boolean(form.title && form.price && (isEditing.value || (canStartAnalysis.value && form.analysisConfirmed === 'true'))));
+const hasSurfaceAnalysis = computed(() => Boolean(recordMediaPreview.value && recordRecognition.value.isRecord && recordRecognition.value.source !== 'fallback'));
+const hasPreciseAudioAnalysis = computed(() => Boolean(audioAnalysis.value && !isReferenceAudioAnalysis.value));
+const canConfirmAnalysis = computed(() => Boolean(form.catalogNumber.trim() && hasSurfaceAnalysis.value && hasPreciseAudioAnalysis.value));
+const canUseCollectionAnalysis = computed(() => isCollectionConversion.value && Boolean(audioAnalysis.value || goodAudioRecordedAt.value || noisyAudioRecordedAt.value));
+const canCheckAnalysis = computed(() => canConfirmAnalysis.value || canUseCollectionAnalysis.value);
+const valid = computed(() => Boolean(form.title && form.price && (isEditing.value || (canCheckAnalysis.value && form.analysisConfirmed === 'true'))));
 
 const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
   const reader = new FileReader();
@@ -534,12 +645,11 @@ const setImage = async (slot: 'cover' | 'record', file: File) => {
   const dataUrl = await readFileAsDataUrl(file);
   if (slot === 'cover') {
     coverImage.value = dataUrl;
-    jacketRecognition.value = await analyzeJacketImage(dataUrl);
   } else {
     recordImage.value = dataUrl;
     recordRecognition.value = await analyzeLpMedia(dataUrl, 'image');
+    resetConfirmation();
   }
-  resetConfirmation();
   saveDraft(false);
 };
 
@@ -553,12 +663,11 @@ const setRecordVideo = async (file: File) => {
 const clearImage = (slot: 'cover' | 'record') => {
   if (slot === 'cover') {
     coverImage.value = '';
-    jacketRecognition.value = recognizeJacketImage('');
   } else {
     recordImage.value = '';
     recordRecognition.value = recognizeLpImage(recordMediaPreview.value);
+    resetConfirmation();
   }
-  resetConfirmation();
   saveDraft(false);
 };
 
@@ -585,11 +694,12 @@ const loadListingForEdit = () => {
   recordImage.value = listing.recordImageDataUrl || listing.images[1] || '';
   recordVideo.value = listing.recordVideoDataUrl || '';
   extraImages.value = listing.images.slice(2, 5);
-  jacketRecognition.value = (listing.analysisReport?.jacket as JacketRecognition | undefined) || recognizeJacketImage(coverImage.value);
-  recordRecognition.value = recognizeLpImage(recordImage.value || recordVideo.value, recordVideo.value && !recordImage.value ? 'video' : 'image');
+  recordRecognition.value = (listing.analysisReport?.recordSurface as LpRecognition | undefined)
+    || recognizeLpImage(recordImage.value || recordVideo.value, recordVideo.value && !recordImage.value ? 'video' : 'image');
   if (listing.audioSamples?.good) {
     goodAudioName.value = listing.audioSamples.good.name;
     goodAudioDataUrl.value = listing.audioSamples.good.dataUrl || '';
+    goodAudioRecordedAt.value = listing.audioSamples.good.recordedAt || '';
     goodAudioUrl.value = goodAudioDataUrl.value;
     goodSampleStart.value = Number(listing.audioSamples.good.startSeconds || 0);
     goodSampleEnd.value = Number(listing.audioSamples.good.endSeconds || listing.audioSamples.good.durationSeconds || 20);
@@ -597,11 +707,12 @@ const loadListingForEdit = () => {
   if (listing.audioSamples?.noisy) {
     noisyAudioName.value = listing.audioSamples.noisy.name;
     noisyAudioDataUrl.value = listing.audioSamples.noisy.dataUrl || '';
+    noisyAudioRecordedAt.value = listing.audioSamples.noisy.recordedAt || '';
     noisyAudioUrl.value = noisyAudioDataUrl.value;
     noisySampleStart.value = Number(listing.audioSamples.noisy.startSeconds || 0);
     noisySampleEnd.value = Number(listing.audioSamples.noisy.endSeconds || listing.audioSamples.noisy.durationSeconds || 15);
   }
-  audioAnalysis.value = {
+  audioAnalysis.value = (listing.analysisReport?.audio as AudioAnalysisResult | undefined) || {
     source: 'librosa',
     audioScore: listing.audioScore,
     audioGrade: listing.audioGrade,
@@ -629,6 +740,7 @@ const handleAudio = async (kind: 'ambient' | 'good' | 'noisy', file: File) => {
     goodAudioFile.value = file;
     goodAudioName.value = file.name;
     goodAudioDataUrl.value = dataUrl;
+    goodAudioRecordedAt.value = new Date().toISOString();
     goodAudioUrl.value = dataUrl;
     goodSampleStart.value = 0;
     goodSampleEnd.value = scratchAudioRecommendation.value.good.recordSeconds || 20;
@@ -636,6 +748,7 @@ const handleAudio = async (kind: 'ambient' | 'good' | 'noisy', file: File) => {
     noisyAudioFile.value = file;
     noisyAudioName.value = file.name;
     noisyAudioDataUrl.value = dataUrl;
+    noisyAudioRecordedAt.value = new Date().toISOString();
     noisyAudioUrl.value = dataUrl;
     noisySampleStart.value = 0;
     noisySampleEnd.value = scratchAudioRecommendation.value.noisy.recordSeconds || 15;
@@ -779,6 +892,7 @@ const clearAudio = (kind: 'ambient' | 'good' | 'noisy') => {
     goodAudioFile.value = null;
     goodAudioName.value = '';
     goodAudioDataUrl.value = '';
+    goodAudioRecordedAt.value = '';
     goodAudioUrl.value = '';
     goodSampleStart.value = 0;
     goodSampleEnd.value = scratchAudioRecommendation.value.good.recordSeconds || 20;
@@ -786,6 +900,7 @@ const clearAudio = (kind: 'ambient' | 'good' | 'noisy') => {
     noisyAudioFile.value = null;
     noisyAudioName.value = '';
     noisyAudioDataUrl.value = '';
+    noisyAudioRecordedAt.value = '';
     noisyAudioUrl.value = '';
     noisySampleStart.value = 0;
     noisySampleEnd.value = scratchAudioRecommendation.value.noisy.recordSeconds || 15;
@@ -797,7 +912,7 @@ const clearAudio = (kind: 'ambient' | 'good' | 'noisy') => {
 
 const runAudioAnalysis = async () => {
   audioAnalyzing.value = true;
-  recordingMessage.value = '기기 내 오디오 엔진으로 먼저 분석하고, 필요하면 서버 분석으로 보강하는 중입니다.';
+  recordingMessage.value = '서버 정밀 분석으로 먼저 확인하고, 기기 내 분석으로 한 번 더 대조하는 중입니다.';
   try {
     audioAnalysis.value = await analyzeAudioSamples({ ambient: ambientAudioFile.value || undefined, good: goodAudioFile.value || undefined, noisy: noisyAudioFile.value || undefined });
     recordingMessage.value = audioAnalysis.value.source === 'browser'
@@ -858,43 +973,11 @@ const applyCatalogCandidate = () => {
   if (!selectedCandidate.value) return;
   form.title = selectedCandidate.value.title;
   form.artist = selectedCandidate.value.artist;
-  if (!form.catalogNumber) form.catalogNumber = selectedCandidate.value.catalogNumber;
-  const pressing = createPressingInfo(selectedCandidate.value, form.matrixNumber);
+  form.catalogNumber = selectedCandidate.value.catalogNumber;
+  const pressing = createPressingInfo(selectedCandidate.value);
   form.pressing = pressing.pressing;
   catalogLookupMessage.value = `${selectedCandidate.value.title} 정보를 적용했습니다.`;
   resetConfirmation();
-};
-
-const searchAddress = async () => {
-  const keyword = form.location.trim();
-  if (keyword.length < 2 || isAddressSearching.value) return;
-  const requestId = ++addressLookupRequest;
-  isAddressSearching.value = true;
-  addressLookupMessage.value = '주소를 검색하는 중입니다.';
-  addressCandidates.value = [];
-  try {
-    const result = await fetchAddressCandidates(keyword);
-    if (requestId !== addressLookupRequest) return;
-    addressLookupSource.value = result.source;
-    addressCandidates.value = result.candidates;
-    if (result.candidates.length) {
-      addressLookupMessage.value = `카카오 지도에서 ${result.candidates.length}개 장소를 찾았습니다. 맞는 장소를 선택해 주세요.`;
-    } else {
-      addressLookupMessage.value = result.message || '일치하는 장소가 없습니다. 장소명이나 지역명을 조금 더 구체적으로 입력해 주세요.';
-    }
-  } catch (error) {
-    addressLookupSource.value = '';
-    addressLookupMessage.value = error instanceof Error ? error.message : '카카오 지도 검색에 실패했습니다.';
-  } finally {
-    if (requestId === addressLookupRequest) isAddressSearching.value = false;
-  }
-};
-
-const selectAddressCandidate = (candidate: AddressCandidate) => {
-  form.location = candidate.roadAddress || candidate.jibunAddress || candidate.placeName || candidate.address || form.location;
-  addressCandidates.value = [];
-  addressLookupMessage.value = '카카오 지도 검색 결과를 적용했습니다.';
-  saveDraft(false);
 };
 
 watch(() => form.catalogNumber, () => {
@@ -902,6 +985,324 @@ watch(() => form.catalogNumber, () => {
   catalogApiStatus.value = '';
   catalogCandidates.value = [];
   selectedCandidateId.value = '';
+});
+
+const lonLatToTile = (lat: number, lng: number, zoom: number) => {
+  const scale = 2 ** zoom;
+  const x = Math.floor(((lng + 180) / 360) * scale);
+  const latRad = lat * Math.PI / 180;
+  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * scale);
+  return { x, y };
+};
+
+const latLngToWorldPixel = (lat: number, lng: number, zoom: number) => {
+  const scale = 256 * 2 ** zoom;
+  const sinLat = Math.sin(lat * Math.PI / 180);
+  return {
+    x: ((lng + 180) / 360) * scale,
+    y: (0.5 - Math.log((1 + sinLat) / (1 - sinLat)) / (4 * Math.PI)) * scale,
+  };
+};
+
+const worldPixelToLatLng = (x: number, y: number, zoom: number) => {
+  const scale = 256 * 2 ** zoom;
+  const lng = x / scale * 360 - 180;
+  const n = Math.PI - 2 * Math.PI * y / scale;
+  const lat = 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+  return { lat, lng };
+};
+
+const clampMapZoom = (zoom: number) => Math.max(12, Math.min(18, zoom));
+
+const getPointerDistance = () => {
+  const points = Array.from(fallbackPointers.values());
+  if (points.length < 2) return 0;
+  const [first, second] = points;
+  return Math.hypot(second.x - first.x, second.y - first.y);
+};
+
+const clampLatLng = (lat: number, lng: number) => ({
+  lat: Math.max(-85, Math.min(85, lat)),
+  lng: ((lng + 540) % 360) - 180,
+});
+
+const parsePickedLocation = (value: string): KakaoMapPoint | null => {
+  const match = value.match(/(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const lat = Number(match[1]);
+  const lng = Number(match[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    lat,
+    lng,
+    title: '선택한 거래 위치',
+    addressName: `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+  };
+};
+
+const escapeMapText = (value: string) => value
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+const renderFallbackMap = (point: KakaoMapPoint) => {
+  const zoom = locationMapZoom.value;
+  const centerPixel = latLngToWorldPixel(point.lat, point.lng, zoom);
+  const centerTileX = Math.floor(centerPixel.x / 256);
+  const centerTileY = Math.floor(centerPixel.y / 256);
+  const tiles: string[] = [];
+  for (let yOffset = -2; yOffset <= 2; yOffset += 1) {
+    for (let xOffset = -2; xOffset <= 2; xOffset += 1) {
+      const x = centerTileX + xOffset;
+      const y = centerTileY + yOffset;
+      const left = x * 256 - centerPixel.x;
+      const top = y * 256 - centerPixel.y;
+      tiles.push(`<img src="https://tile.openstreetmap.org/${zoom}/${x}/${y}.png" style="position:absolute;left:calc(50% + ${left}px);top:calc(50% + ${top}px);width:256px;height:256px;" alt="">`);
+    }
+  }
+  const title = escapeMapText(point.title);
+  const address = escapeMapText(point.addressName);
+  locationMapFallbackHtml.value = `
+    <div style="position:absolute;inset:0;overflow:hidden;background:#e5e7eb;touch-action:none;">
+      ${tiles.join('')}
+      <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);width:24px;height:24px;border-radius:999px;background:#2563eb;border:4px solid white;box-shadow:0 6px 18px rgba(0,0,0,.25);"></div>
+      <div style="position:absolute;left:12px;right:12px;bottom:12px;border-radius:8px;background:rgba(255,255,255,.94);padding:8px 10px;font-size:12px;color:#1f2937;box-shadow:0 3px 10px rgba(0,0,0,.12);">
+        ${title}<br><span style="color:#6b7280;">${address}</span>
+      </div>
+    </div>
+  `;
+};
+
+const findLocationPointByRest = async (keyword: string): Promise<KakaoMapPoint | null> => {
+  const query = new URLSearchParams({ keyword, count: '1' });
+  const response = await fetchApi(`/address/search?${query.toString()}`, {}, 9000);
+  if (!response.ok) return null;
+  const payload = await response.json() as {
+    candidates?: Array<{
+      latitude?: string;
+      longitude?: string;
+      placeName?: string;
+      roadAddress?: string;
+      jibunAddress?: string;
+      address?: string;
+    }>;
+  };
+  const candidate = payload.candidates?.[0];
+  const lat = Number(candidate?.latitude);
+  const lng = Number(candidate?.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    lat,
+    lng,
+    title: candidate?.placeName || keyword,
+    addressName: candidate?.roadAddress || candidate?.jibunAddress || candidate?.address || keyword,
+  };
+};
+
+const updateFallbackMapCenter = (lat: number, lng: number) => {
+  const next = clampLatLng(lat, lng);
+  const point = {
+    lat: next.lat,
+    lng: next.lng,
+    title: '선택한 거래 위치',
+    addressName: `${next.lat.toFixed(6)}, ${next.lng.toFixed(6)}`,
+  };
+  locationMapPoint.value = point;
+  renderFallbackMap(point);
+  locationMapMessage.value = '지도를 움직인 뒤 이 위치 선택을 누르세요.';
+};
+
+const startFallbackMapDrag = (event: PointerEvent) => {
+  if (!locationMapFallbackHtml.value || !locationMapPoint.value) return;
+  const target = event.currentTarget as HTMLElement;
+  target.setPointerCapture?.(event.pointerId);
+  fallbackPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (fallbackPointers.size >= 2) {
+    const distance = getPointerDistance();
+    fallbackDrag = null;
+    fallbackPinch = {
+      startDistance: distance,
+      startZoom: locationMapZoom.value,
+      lastZoom: locationMapZoom.value,
+    };
+    return;
+  }
+  fallbackDrag = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    startLat: locationMapPoint.value.lat,
+    startLng: locationMapPoint.value.lng,
+    moved: false,
+  };
+};
+
+const moveFallbackMapDrag = (event: PointerEvent) => {
+  if (fallbackPointers.has(event.pointerId)) {
+    fallbackPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  }
+  if (fallbackPinch && fallbackPointers.size >= 2 && locationMapPoint.value) {
+    const distance = getPointerDistance();
+    if (fallbackPinch.startDistance > 0 && distance > 0) {
+      const zoomDelta = Math.log2(distance / fallbackPinch.startDistance) * 2;
+      const nextZoom = clampMapZoom(Math.round(fallbackPinch.startZoom + zoomDelta));
+      if (nextZoom !== fallbackPinch.lastZoom) {
+        locationMapZoom.value = nextZoom;
+        fallbackPinch.lastZoom = nextZoom;
+        renderFallbackMap(locationMapPoint.value);
+        locationMapMessage.value = `확대 ${locationMapZoom.value}단계 · 지도를 움직인 뒤 이 위치 선택을 누르세요.`;
+      }
+    }
+    return;
+  }
+  if (!fallbackDrag || fallbackDrag.pointerId !== event.pointerId) return;
+  const dx = event.clientX - fallbackDrag.startX;
+  const dy = event.clientY - fallbackDrag.startY;
+  if (Math.abs(dx) + Math.abs(dy) < 2) return;
+  fallbackDrag.moved = true;
+  const zoom = locationMapZoom.value;
+  const startPixel = latLngToWorldPixel(fallbackDrag.startLat, fallbackDrag.startLng, zoom);
+  const next = worldPixelToLatLng(startPixel.x - dx, startPixel.y - dy, zoom);
+  updateFallbackMapCenter(next.lat, next.lng);
+};
+
+const endFallbackMapDrag = (event: PointerEvent) => {
+  const target = event.currentTarget as HTMLElement;
+  target.releasePointerCapture?.(event.pointerId);
+  fallbackPointers.delete(event.pointerId);
+  if (fallbackPointers.size < 2) fallbackPinch = null;
+  if (fallbackDrag?.pointerId === event.pointerId) fallbackDrag = null;
+};
+
+const pickedLocationDescriptionLine = (point: KakaoMapPoint) => {
+  const coords = `${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
+  const place = point.addressName && point.addressName !== coords ? `${point.addressName} (${coords})` : coords;
+  return `거래 위치: ${place}`;
+};
+
+const applyPickedLocationToDescription = (point: KakaoMapPoint) => {
+  const nextLine = pickedLocationDescriptionLine(point);
+  const lines = form.description.split('\n');
+  const index = lines.findIndex(line => line.trim().startsWith('거래 위치:') || line.trim().startsWith('거래 주소:'));
+  if (index >= 0) {
+    lines[index] = nextLine;
+    form.description = lines.join('\n').trim();
+    return;
+  }
+  form.description = [form.description.trim(), nextLine].filter(Boolean).join('\n');
+};
+
+const chooseMapLocation = async () => {
+  const point = locationMapPoint.value;
+  if (!point) return;
+  form.location = `${point.lat.toFixed(6)}, ${point.lng.toFixed(6)}`;
+  applyPickedLocationToDescription(point);
+  locationMapMessage.value = '선택한 핀 위치가 거래 장소로 저장되었습니다.';
+  await saveDraft(false);
+};
+
+const zoomFallbackMap = (delta: number) => {
+  const point = locationMapPoint.value;
+  if (!point) return;
+  locationMapZoom.value = clampMapZoom(locationMapZoom.value + delta);
+  renderFallbackMap(point);
+  locationMapMessage.value = `확대 ${locationMapZoom.value}단계 · 지도를 움직인 뒤 이 위치 선택을 누르세요.`;
+};
+
+const renderLocationMap = async () => {
+  await nextTick();
+  const container = locationMapContainer.value;
+  const query = form.location.trim();
+  const requestId = ++locationMapRequest;
+
+  if (!container) return;
+  if (!query) {
+    locationMarker?.setMap(null);
+    locationMapPoint.value = null;
+    locationMapFallbackHtml.value = '';
+    locationMapMessage.value = '거래 장소를 입력하면 지도가 표시됩니다.';
+    return;
+  }
+
+  const pickedPoint = parsePickedLocation(query);
+  if (pickedPoint) {
+    locationMarker?.setMap(null);
+    locationMapPoint.value = pickedPoint;
+    renderFallbackMap(pickedPoint);
+    locationMapMessage.value = '지도를 움직인 뒤 이 위치 선택을 누르세요.';
+    return;
+  }
+
+  const restPoint = await findLocationPointByRest(query).catch(() => null);
+  if (requestId !== locationMapRequest) return;
+  if (restPoint) {
+    locationMarker?.setMap(null);
+    locationMapPoint.value = restPoint;
+    renderFallbackMap(restPoint);
+    locationMapMessage.value = '지도를 움직인 뒤 이 위치 선택을 누르세요.';
+    return;
+  }
+
+  if (!getKakaoMapJavaScriptKey()) {
+    locationMapMessage.value = '카카오 JavaScript 키가 없어 지도를 표시할 수 없습니다.';
+    return;
+  }
+
+  locationMapMessage.value = '지도 위치를 찾는 중입니다.';
+  try {
+    locationMapFallbackHtml.value = '';
+    const kakao = await loadKakaoMaps();
+    const point = await findKakaoMapPoint(query, kakao);
+    if (requestId !== locationMapRequest) return;
+
+    if (!point) {
+      locationMarker?.setMap(null);
+      locationMapPoint.value = null;
+      locationMapMessage.value = `"${query}" 위치를 찾지 못했습니다.`;
+      return;
+    }
+
+    const center = new kakao.maps.LatLng(point.lat, point.lng);
+    if (!locationMap) {
+      locationMap = new kakao.maps.Map(container, { center, level: 3 });
+    } else {
+      locationMap.setCenter(center);
+      locationMap.relayout();
+    }
+
+    locationMarker?.setMap(null);
+    locationMarker = new kakao.maps.Marker({ position: center, map: locationMap });
+    locationMapPoint.value = point;
+    locationMapMessage.value = `${point.title} 지도 표시 중`;
+    window.setTimeout(() => locationMap?.relayout(), 0);
+  } catch (error) {
+    if (requestId !== locationMapRequest) return;
+    const point = await findLocationPointByRest(query).catch(() => null);
+    if (requestId !== locationMapRequest) return;
+    if (point) {
+      locationMarker?.setMap(null);
+      locationMapPoint.value = point;
+      renderFallbackMap(point);
+      locationMapMessage.value = `${point.title} 지도 표시 중`;
+      return;
+    }
+    locationMapPoint.value = null;
+    locationMapFallbackHtml.value = '';
+    locationMapMessage.value = error instanceof Error ? error.message : '카카오맵을 표시하지 못했습니다.';
+  }
+};
+
+const scheduleLocationMap = () => {
+  if (locationMapTimer) window.clearTimeout(locationMapTimer);
+  locationMapTimer = window.setTimeout(() => {
+    void renderLocationMap();
+  }, 450);
+};
+
+watch(() => form.location, () => {
+  scheduleLocationMap();
 });
 
 const currentImages = () => [coverImage.value, recordImage.value, ...extraImages.value].filter(Boolean);
@@ -917,11 +1318,12 @@ const currentDraft = () => ({
   ambientAudioDataUrl: ambientAudioDataUrl.value,
   goodAudioDataUrl: goodAudioDataUrl.value,
   noisyAudioDataUrl: noisyAudioDataUrl.value,
+  goodAudioRecordedAt: goodAudioRecordedAt.value,
+  noisyAudioRecordedAt: noisyAudioRecordedAt.value,
   goodSampleStart: goodSampleStart.value,
   goodSampleEnd: goodSampleEnd.value,
   noisySampleStart: noisySampleStart.value,
   noisySampleEnd: noisySampleEnd.value,
-  jacketRecognition: jacketRecognition.value,
   audioAnalysis: audioAnalysis.value,
   audioRecommendations: scratchAudioRecommendation.value,
   formData: { ...form },
@@ -969,12 +1371,11 @@ const recommendPrice = async () => {
       releaseId: selectedCandidate.value?.releaseId,
       surfaceScore: recordRecognition.value.surfaceScore,
       audioScore: audioAnalysis.value?.audioScore,
-      jacketScore: jacketRecognition.value.jacketScore,
       scratchRisk: recordRecognition.value.scratchRisk,
       playbackRisk: audioAnalysis.value?.playbackRisk,
-      jacketRisk: jacketRecognition.value.edgeWearRisk === 'high' || jacketRecognition.value.cornerWearRisk === 'high' ? 'high' : jacketRecognition.value.edgeWearRisk === 'medium' || jacketRecognition.value.cornerWearRisk === 'medium' ? 'medium' : 'low',
     });
     form.price = String(result.recommended_price);
+    void refreshMarketEstimate(false);
     const range = result.price_range ? `추천 범위 ${result.price_range.min.toLocaleString()}~${result.price_range.max.toLocaleString()}원. ` : '';
     const discogs = result.discogs?.suggestedPrice || result.discogs?.marketplaceLow
       ? `Discogs 기준 ${result.discogs.suggestedPrice ? `판매 이력 ${result.discogs.suggestedPrice.toLocaleString()}원` : '판매 이력 확인 불가'}${result.discogs.marketplaceLow ? `, 현재 최저 ${result.discogs.marketplaceLow.toLocaleString()}원` : ''}. `
@@ -990,21 +1391,23 @@ const recommendPrice = async () => {
     const quality = audioAnalysis.value?.audioScore ? Math.max(0.7, Math.min(1.08, audioAnalysis.value.audioScore / 82)) : 1;
     const price = Math.round((matched ? ((matched.priceRange.min + matched.priceRange.max) / 2) : averagePrice) * quality / 1000) * 1000;
     form.price = String(price);
+    void refreshMarketEstimate(false);
     priceMessage.value = `Discogs 가격 추천 연결 실패로 앱 내 시세와 품질 점수 기준 ${price.toLocaleString()}원을 임시 추천합니다.`;
   }
 };
 
 const fillDescription = () => {
-  const jacketPrefix = jacketNeedsRetake.value ? '자켓 참고용 분석' : '자켓 상태';
   const audioPrefix = isReferenceAudioAnalysis.value ? '음질 참고용 분석' : '음질 분석';
+  const sampleDates = [goodAudioRecordedAt.value, noisyAudioRecordedAt.value]
+    .filter(Boolean)
+    .map(formatRecordedDate);
   const parts = [
     form.title ? `${form.title}${form.artist ? ` - ${form.artist}` : ''}` : '',
     form.catalogNumber ? `카탈로그 번호: ${form.catalogNumber}` : '',
     form.location ? `거래 주소: ${form.location}` : '',
-    coverImage.value ? `${jacketPrefix}: ${jacketRecognition.value.jacketGrade} (${jacketRecognition.value.jacketScore}점), 테두리 ${riskLabel(jacketRecognition.value.edgeWearRisk)}, 모서리 ${riskLabel(jacketRecognition.value.cornerWearRisk)}.` : '',
-    jacketNeedsRetake.value ? '자켓 이미지는 반사 또는 낮은 신뢰도로 재촬영을 권장합니다.' : '',
     recordMediaPreview.value ? `표면 상태 점수 ${recordRecognition.value.surfaceScore}점, 스크래치 후보 ${recordRecognition.value.scratchCount}개, 재생 영향 ${recordRecognition.value.playbackImpact}.` : '',
     recordMediaPreview.value ? `음질 녹음 추천: 좋은 구간은 ${scratchAudioRecommendation.value.good.title}, 안 좋은 구간은 ${scratchAudioRecommendation.value.noisy.title}.` : '',
+    sampleDates.length ? `샘플 녹음일: ${[...new Set(sampleDates)].join(', ')}` : '',
     audioAnalysis.value ? `${audioPrefix}: ${audioAnalysis.value.audioGrade} (${audioAnalysis.value.audioScore}점), 클릭/팝 후보 ${audioAnalysis.value.clickCount ?? 0}개, 재생 위험 ${riskLabel(audioAnalysis.value.playbackRisk)}.` : '',
     '감정 결과는 판매 설명 참고용이며 실제 재생과 육안 확인을 함께 권장합니다.',
   ].filter(Boolean);
@@ -1021,8 +1424,8 @@ const audioSamplePayload = () => {
   const goodSegment = normalizeSegment(goodSampleStart.value, goodSampleEnd.value, scratchAudioRecommendation.value.good.recordSeconds || 20);
   const noisySegment = normalizeSegment(noisySampleStart.value, noisySampleEnd.value, scratchAudioRecommendation.value.noisy.recordSeconds || 15);
   return {
-    ...(goodAudioName.value ? { good: { name: goodAudioName.value, dataUrl: goodAudioDataUrl.value, ...goodSegment } } : {}),
-    ...(noisyAudioName.value ? { noisy: { name: noisyAudioName.value, dataUrl: noisyAudioDataUrl.value, ...noisySegment } } : {}),
+    ...(goodAudioName.value ? { good: { name: goodAudioName.value, dataUrl: goodAudioDataUrl.value, recordedAt: goodAudioRecordedAt.value || new Date().toISOString(), ...goodSegment } } : {}),
+    ...(noisyAudioName.value ? { noisy: { name: noisyAudioName.value, dataUrl: noisyAudioDataUrl.value, recordedAt: noisyAudioRecordedAt.value || new Date().toISOString(), ...noisySegment } } : {}),
   };
 };
 
@@ -1037,6 +1440,54 @@ const listingIsFirstPress = () => {
 };
 const listingHasRareSignal = (tags: string[]) => listingIsFirstPress() || hasRareHint([...tags, form.pressing]);
 
+const marketPriceTone = computed(() => {
+  if (!marketEstimate.value) return 'text-gray-600';
+  if (marketEstimate.value.priceStatus === 'above_range') return 'text-orange-600';
+  if (marketEstimate.value.priceStatus === 'below_range') return 'text-green-600';
+  return 'text-blue-700';
+});
+const marketPriceStatus = computed(() => {
+  if (!marketEstimate.value) return '';
+  if (marketEstimate.value.priceStatus === 'above_range') return '상한가보다 높습니다.';
+  if (marketEstimate.value.priceStatus === 'below_range') return '하한가보다 낮습니다.';
+  return '적정 범위 안입니다.';
+});
+
+const refreshMarketEstimate = async (applyRecommended = false) => {
+  if (marketLoading.value) return;
+  const tags = form.tags.replace(/,/g, ' ').split(/\s+/).map(tag => tag.trim()).filter(Boolean);
+  marketLoading.value = true;
+  marketError.value = '';
+  try {
+    const estimate = await fetchMarketPriceEstimate({
+      listing_id: isEditing.value ? editingListingId.value : undefined,
+      title: form.title.trim(),
+      artist: form.artist.trim(),
+      catalog_number: form.catalogNumber.trim(),
+      price: Number(form.price) || undefined,
+      year: selectedCandidate.value?.year,
+      audio_grade: audioAnalysis.value?.audioGrade,
+      pressing_condition: form.pressing.trim(),
+      is_first_press: listingIsFirstPress(),
+      is_rare: listingHasRareSignal(tags),
+      location: form.location.trim(),
+    });
+    marketEstimate.value = estimate;
+    if (applyRecommended && estimate.recommendedPrice > 0) form.price = String(estimate.recommendedPrice);
+    priceMessage.value = `기준가 ${formatWon(estimate.basePrice)}, 추천가 ${formatWon(estimate.recommendedPrice)}. ${marketPriceStatus.value}`;
+  } catch (error) {
+    marketError.value = error instanceof Error ? error.message : '시세를 불러오지 못했습니다.';
+  } finally {
+    marketLoading.value = false;
+  }
+};
+
+const applyMarketRecommendedPrice = () => {
+  if (!marketEstimate.value?.recommendedPrice) return;
+  form.price = String(marketEstimate.value.recommendedPrice);
+  void refreshMarketEstimate(false);
+};
+
 const publishListingAction = async () => {
   if (!valid.value || publishSaving.value) return;
   publishSaving.value = true;
@@ -1046,6 +1497,11 @@ const publishListingAction = async () => {
     title: form.title.trim(),
     artist: form.artist.trim(),
     catalog_number: form.catalogNumber.trim(),
+    discogs_release_id: selectedCandidate.value?.releaseId,
+    discogs_cover_image_url: selectedCandidate.value?.coverImageUrl,
+    release_label: selectedCandidate.value?.label,
+    release_country: selectedCandidate.value?.country,
+    year: selectedCandidate.value?.year,
     price: Number(form.price),
     description: form.description.trim(),
     tags,
@@ -1057,14 +1513,11 @@ const publishListingAction = async () => {
     audio_grade: audioAnalysis.value?.audioGrade,
     audio_score: audioAnalysis.value?.audioScore,
     audio_samples: audioSamplePayload(),
-    jacket_grade: jacketRecognition.value.isCover ? jacketRecognition.value.jacketGrade : undefined,
-    jacket_score: jacketRecognition.value.isCover ? jacketRecognition.value.jacketScore : undefined,
     is_rare: listingHasRareSignal(tags),
     is_first_press: listingIsFirstPress(),
     analysis_report: {
       pressing: form.pressing,
       coverImageDataUrl: coverImage.value,
-      jacket: jacketRecognition.value,
       recordImageDataUrl: recordImage.value,
       recordVideoDataUrl: recordVideo.value,
       recordSurface: recordRecognition.value,
@@ -1078,8 +1531,12 @@ const publishListingAction = async () => {
     : await store.publishListing(payload);
   publishSaving.value = false;
   if (!result.ok) {
+    if ('priceEstimate' in result && result.priceEstimate) marketEstimate.value = result.priceEstimate as MarketPriceEstimate;
     alert(result.message);
     return;
+  }
+  if (!isEditing.value && result.listing?.id && sourceCollectionId.value) {
+    store.markCollectionConverted(sourceCollectionId.value, result.listing.id);
   }
   if (!isEditing.value) store.clearDraft();
   if (result.listing?.id) localStorage.setItem('vinyl-check-last-sell-report-listing-id', result.listing.id);
@@ -1089,6 +1546,7 @@ const publishListingAction = async () => {
 };
 
 onMounted(async () => {
+  void renderLocationMap();
   if (isEditing.value) {
     const loaded = loadListingForEdit();
     if (!loaded) {
@@ -1100,18 +1558,16 @@ onMounted(async () => {
       }
     }
   }
-  if (coverImage.value && jacketRecognition.value.confidence < 65) {
-    jacketRecognition.value = await analyzeJacketImage(coverImage.value);
-  }
+  if (form.price || form.title || form.catalogNumber) void refreshMarketEstimate(false);
   let appliedScannedMedia = false;
-  const scannedRecordImage = takePendingCapture('image') || localStorage.getItem('vinyl-check-scanned-record-image');
+  const scannedRecordImage = await takePendingCapture('image') || localStorage.getItem('vinyl-check-scanned-record-image');
   if (scannedRecordImage) {
     localStorage.removeItem('vinyl-check-scanned-record-image');
     recordImage.value = scannedRecordImage;
     recordRecognition.value = await analyzeLpMedia(scannedRecordImage, 'image');
     appliedScannedMedia = true;
   }
-  const scannedRecordVideo = takePendingCapture('video') || localStorage.getItem('vinyl-check-scanned-record-video');
+  const scannedRecordVideo = await takePendingCapture('video') || localStorage.getItem('vinyl-check-scanned-record-video');
   if (scannedRecordVideo) {
     localStorage.removeItem('vinyl-check-scanned-record-video');
     recordVideo.value = scannedRecordVideo;
@@ -1141,10 +1597,89 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (locationMapTimer) window.clearTimeout(locationMapTimer);
+  locationMarker?.setMap(null);
   if (recordingUsesNative) void stopNativeAudioRecording().catch(() => undefined);
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
   clearRecordingTimer();
   cleanupRecordingStream();
+});
+
+const ScratchInspectionPreview = defineComponent({
+  props: {
+    mediaUrl: { type: String, required: true },
+    mediaType: { type: String as PropType<'image' | 'video'>, required: true },
+    regions: { type: Array as PropType<ScratchRegion[]>, default: () => [] },
+  },
+  setup(props) {
+    const strokeForSeverity = (severity?: ScratchRegion['severity']) => {
+      if (severity === 'high') return '#ef4444';
+      if (severity === 'medium') return '#f97316';
+      return '#eab308';
+    };
+    const lineNodes = () => props.regions.flatMap((region, index) => {
+      const color = strokeForSeverity(region.severity);
+      const keyBase = `${region.x1}-${region.y1}-${region.x2}-${region.y2}-${index}`;
+      return [
+        h('line', {
+          key: `${keyBase}-halo`,
+          x1: region.x1,
+          y1: region.y1,
+          x2: region.x2,
+          y2: region.y2,
+          stroke: 'rgba(255,255,255,0.72)',
+          'stroke-width': 10,
+          'stroke-linecap': 'round',
+          'vector-effect': 'non-scaling-stroke',
+        }),
+        h('line', {
+          key: `${keyBase}-line`,
+          x1: region.x1,
+          y1: region.y1,
+          x2: region.x2,
+          y2: region.y2,
+          stroke: color,
+          'stroke-width': 4,
+          'stroke-linecap': 'round',
+          'vector-effect': 'non-scaling-stroke',
+        }),
+      ];
+    });
+
+    return () => h('div', { class: 'rounded-lg border bg-gray-950 p-2 text-white' }, [
+      h('div', { class: 'mb-2 flex items-center justify-between gap-2 text-xs' }, [
+        h('span', { class: 'font-medium' }, '스크래치 후보 표시'),
+        props.mediaType === 'video'
+          ? h('span', { class: 'rounded bg-white/10 px-2 py-1 text-[11px] text-white/75' }, '대표 프레임 기준')
+          : null,
+      ]),
+      h('div', { class: 'relative aspect-square overflow-hidden rounded bg-black' }, [
+        props.mediaType === 'video'
+          ? h('video', { src: props.mediaUrl, controls: true, class: 'h-full w-full object-contain' })
+          : h('img', { src: props.mediaUrl, alt: '스크래치 후보 표시 표면 이미지', class: 'h-full w-full object-contain' }),
+        h('svg', {
+          class: 'pointer-events-none absolute inset-0 h-full w-full',
+          viewBox: '0 0 1 1',
+          preserveAspectRatio: 'none',
+          'aria-hidden': 'true',
+        }, lineNodes()),
+      ]),
+      h('div', { class: 'mt-2 flex flex-wrap gap-2 text-[11px] text-white/80' }, [
+        h('span', { class: 'inline-flex items-center gap-1' }, [
+          h('span', { class: 'h-2 w-4 rounded-full bg-red-500' }),
+          '강한 후보',
+        ]),
+        h('span', { class: 'inline-flex items-center gap-1' }, [
+          h('span', { class: 'h-2 w-4 rounded-full bg-orange-500' }),
+          '중간 후보',
+        ]),
+        h('span', { class: 'inline-flex items-center gap-1' }, [
+          h('span', { class: 'h-2 w-4 rounded-full bg-yellow-500' }),
+          '약한 후보',
+        ]),
+      ]),
+    ]);
+  },
 });
 
 const PhotoSlot = defineComponent({

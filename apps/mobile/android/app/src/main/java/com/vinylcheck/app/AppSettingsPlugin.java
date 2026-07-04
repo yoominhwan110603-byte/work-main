@@ -23,4 +23,19 @@ public class AppSettingsPlugin extends Plugin {
         result.put("opened", true);
         call.resolve(result);
     }
+
+    @PluginMethod
+    public void setSystemBars(PluginCall call) {
+        boolean dark = call.getBoolean("dark", false);
+        getActivity().runOnUiThread(() -> {
+            if (getActivity() instanceof MainActivity) {
+                ((MainActivity) getActivity()).applySystemBars(dark);
+            }
+
+            JSObject result = new JSObject();
+            result.put("applied", true);
+            result.put("dark", dark);
+            call.resolve(result);
+        });
+    }
 }

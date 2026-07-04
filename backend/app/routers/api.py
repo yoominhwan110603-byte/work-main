@@ -1,4 +1,5 @@
 import base64
+import asyncio
 import hashlib
 import hmac
 import json
@@ -15,18 +16,23 @@ from uuid import uuid4
 import cv2
 import httpx
 import numpy as np
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from ..schemas import (
-    AddressApiKeyUpsert,
     AuthCheck,
     AuthLogin,
     AuthSignup,
+    BuyOrderCreate,
     ChatMessageCreate,
+    CollectionCreate,
+    CollectionOfferCreate,
+    CollectionUpdate,
     CommentCreate,
     EmailVerificationConfirm,
     EmailVerificationRequest,
+    FindIdConfirm,
     FindIdRequest,
     GoogleLogin,
+    InstantSellRequest,
     ListingCreate,
     ListingDraftUpsert,
     OfferCreate,
@@ -36,6 +42,18 @@ from ..schemas import (
     ProfileDraftUpsert,
     ReviewCreate,
     ReviewUpdate,
+    WishlistCreate,
+    WishlistUpdate,
+)
+from ..services.lp_analysis import analyze_record_surface_image
+from ..services.discogs_catalog import discogs_catalog_service
+from ..services.market_pricing import (
+    build_market_advice,
+    build_market_estimate,
+    calculate_instant_sale_price,
+    find_matching_buy_orders,
+    normalize_market_key,
+    validate_listing_price,
 )
 from ..services.storage import read_json, write_json
 
@@ -51,6 +69,16 @@ CHATS_PATH = os.path.join(DATA_DIR, "chats.json")
 REVIEWS_PATH = os.path.join(DATA_DIR, "reviews.json")
 COMMENTS_PATH = os.path.join(DATA_DIR, "comments.json")
 OFFERS_PATH = os.path.join(DATA_DIR, "offers.json")
+BUY_ORDERS_PATH = os.path.join(DATA_DIR, "buy_orders.json")
+MARKET_PRICE_HISTORY_PATH = os.path.join(DATA_DIR, "market_price_history.json")
+TRANSACTIONS_PATH = os.path.join(DATA_DIR, "transactions.json")
+WISHLIST_PATH = os.path.join(DATA_DIR, "wishlist.json")
+COLLECTIONS_PATH = os.path.join(DATA_DIR, "collections.json")
+NOTIFICATIONS_PATH = os.path.join(DATA_DIR, "notifications.json")
+NOTIFICATION_READS_PATH = os.path.join(DATA_DIR, "notification_reads.json")
+NOTIFICATION_DISMISSES_PATH = os.path.join(DATA_DIR, "notification_dismisses.json")
+SESSIONS_PATH = os.path.join(DATA_DIR, "sessions.json")
+FIND_ID_TOKENS_PATH = os.path.join(DATA_DIR, "find_id_tokens.json")
 RESET_TOKENS_PATH = os.path.join(DATA_DIR, "password_reset_tokens.json")
 EMAIL_VERIFICATION_PATH = os.path.join(DATA_DIR, "email_verification_tokens.json")
 ENV_PATH = os.path.join(BACKEND_DIR, ".env")
@@ -75,6 +103,17 @@ def load_local_env() -> None:
 
 
 load_local_env()
+
+
+TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def env_flag(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in TRUE_ENV_VALUES
+
+
+def allow_dev_auth_code(name: str) -> bool:
+    return env_flag("ALLOW_DEV_AUTH_CODES") or env_flag(name)
 
 
 def now_iso() -> str:
@@ -173,8 +212,6 @@ def playback_impact(scratch_risk: str, reflection_risk: str) -> str:
 
 MOCK_LISTINGS: list[dict[str, Any]] = []
 
-ADDRESS_FALLBACKS: list[dict[str, str]] = []
-
 def user_payload(user_id: str, username: str, email: str, genres: list[str] | None = None) -> dict[str, Any]:
     return {
         "id": user_id,
@@ -214,6 +251,57 @@ def prune_expired_tokens(tokens: dict[str, Any]) -> dict[str, Any]:
         if expires_at > now:
             next_tokens[key] = token
     return next_tokens
+
+
+def prune_sessions(sessions: dict[str, Any]) -> dict[str, Any]:
+    return prune_expired_tokens(sessions)
+
+
+def create_session(user_id: str, remember_me: bool = True) -> str:
+    sessions = prune_sessions(read_json(SESSIONS_PATH, {}))
+    token = f"session-{uuid4().hex}"
+    lifetime = timedelta(days=30 if remember_me else 1)
+    sessions[token] = {
+        "userId": user_id,
+        "createdAt": now_iso(),
+        "expiresAt": (datetime.now(timezone.utc) + lifetime).isoformat(),
+    }
+    write_json(SESSIONS_PATH, sessions)
+    return token
+
+
+def token_from_authorization(authorization: str | None) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    return token.strip() if scheme.lower() == "bearer" else ""
+
+
+def require_user_id(authorization: Annotated[str | None, Header()] = None) -> str:
+    token = token_from_authorization(authorization)
+    if not token:
+        raise HTTPException(status_code=401, detail="로그인이 필요합니다.")
+    sessions = prune_sessions(read_json(SESSIONS_PATH, {}))
+    session = sessions.get(token)
+    if not session:
+        write_json(SESSIONS_PATH, sessions)
+        raise HTTPException(status_code=401, detail="로그인 세션이 만료되었습니다. 다시 로그인해 주세요.")
+    return str(session.get("userId") or "")
+
+
+def revoke_session(authorization: str | None) -> None:
+    token = token_from_authorization(authorization)
+    if not token:
+        return
+    sessions = prune_sessions(read_json(SESSIONS_PATH, {}))
+    if sessions.pop(token, None) is not None:
+        write_json(SESSIONS_PATH, sessions)
+
+
+def optional_user_id(authorization: str | None) -> str:
+    token = token_from_authorization(authorization)
+    if not token:
+        return ""
+    session = prune_sessions(read_json(SESSIONS_PATH, {})).get(token)
+    return str((session or {}).get("userId") or "")
 
 
 def send_mail(to_email: str, subject: str, body: str) -> bool:
@@ -351,8 +439,183 @@ def listing_is_rare(item: dict[str, Any], tags: list[str] | None = None, analysi
     return text_has_rarity_hint(f"{tag_text} {pressing}")
 
 
+def read_list(path: str) -> list[dict[str, Any]]:
+    data = read_json(path, [])
+    return data if isinstance(data, list) else []
+
+
+def market_validation_detail(message: str, estimate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "message": message,
+        "priceEstimate": estimate,
+        "base_price": estimate.get("basePrice"),
+        "min_price": estimate.get("minPrice"),
+        "max_price": estimate.get("maxPrice"),
+        "recommended_price": estimate.get("recommendedPrice"),
+    }
+
+
+def apply_market_snapshot(listing: dict[str, Any], estimate: dict[str, Any]) -> dict[str, Any]:
+    listing["market_key"] = estimate.get("marketKey") or estimate.get("market_key") or normalize_market_key(listing)
+    listing["base_price"] = int(estimate.get("basePrice") or estimate.get("base_price") or 0)
+    listing["min_price"] = int(estimate.get("minPrice") or estimate.get("min_price") or 0)
+    listing["max_price"] = int(estimate.get("maxPrice") or estimate.get("max_price") or 0)
+    listing["recommended_price"] = int(estimate.get("recommendedPrice") or estimate.get("recommended_price") or 0)
+    listing["instant_sale_price"] = int(estimate.get("instantSalePrice") or estimate.get("instant_sale_price") or 0)
+    listing["seller_price"] = int(listing.get("price") or estimate.get("sellerPrice") or 0)
+    listing["view_count"] = int(listing.get("view_count") or listing.get("viewCount") or listing.get("views") or 0)
+    listing["favorite_count"] = int(listing.get("favorite_count") or listing.get("favoriteCount") or 0)
+    listing["buy_order_count"] = int((estimate.get("metrics") or {}).get("buyOrderCount") or 0)
+    listing["wishlist_count"] = wishlist_count_for_listing(listing)
+    return listing
+
+
+def recalculate_listing_market(listing: dict[str, Any], listings: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    all_listings = listings if listings is not None else read_list(LISTINGS_PATH)
+    buy_orders = read_list(BUY_ORDERS_PATH)
+    history = read_list(MARKET_PRICE_HISTORY_PATH)
+    estimate = build_market_estimate(listing, all_listings, buy_orders, history)
+    return apply_market_snapshot(listing, estimate)
+
+
+def wishlist_count_for_listing(listing: dict[str, Any]) -> int:
+    return sum(
+        1
+        for item in read_list(WISHLIST_PATH)
+        if wishlist_matches_listing(item, listing)
+    )
+
+
+def enrich_estimate_with_wishlist(estimate: dict[str, Any], listing: dict[str, Any]) -> dict[str, Any]:
+    wishlist_count = wishlist_count_for_listing(listing)
+    metrics = estimate.setdefault("metrics", {})
+    metrics["wishlistCount"] = wishlist_count
+    estimate["wishlistCount"] = wishlist_count
+    estimate["wishlist_count"] = wishlist_count
+    return estimate
+
+
+def normalize_lookup_text(value: Any) -> str:
+    return " ".join(
+        "".join(char.lower() if char.isalnum() or char in {"+", "-", " "} else " " for char in str(value or "")).split()
+    )
+
+
+def wishlist_matches_listing(item: dict[str, Any], listing: dict[str, Any]) -> bool:
+    if str(item.get("status") or "active") != "active":
+        return False
+    if str(listing.get("status") or "published").lower() not in {"published", "selling"}:
+        return False
+
+    wishlist_release_id = int(item.get("discogs_release_id") or item.get("discogsReleaseId") or 0)
+    listing_release_id = int(listing.get("discogs_release_id") or listing.get("discogsReleaseId") or 0)
+    if wishlist_release_id and listing_release_id:
+        return wishlist_release_id == listing_release_id
+
+    wishlist_catalog = normalize_lookup_text(item.get("catalog_number") or item.get("catalogNumber"))
+    listing_catalog = normalize_lookup_text(listing.get("catalog_number") or listing.get("catalogNumber"))
+    if wishlist_catalog:
+        if not listing_catalog or wishlist_catalog != listing_catalog:
+            return False
+        if wishlist_release_id and not listing_release_id:
+            wishlist_year = str(item.get("year") or "").strip()
+            listing_year = str(listing.get("year") or "").strip()
+            wishlist_country = normalize_lookup_text(item.get("release_country") or item.get("releaseCountry"))
+            listing_country = normalize_lookup_text(listing.get("release_country") or listing.get("releaseCountry"))
+            if wishlist_year and wishlist_year != listing_year:
+                return False
+            if wishlist_country and wishlist_country != listing_country:
+                return False
+        return True
+
+    wishlist_title = normalize_lookup_text(item.get("title"))
+    if not wishlist_title:
+        listing_key = str(listing.get("market_key") or listing.get("marketKey") or normalize_market_key(listing))
+        wishlist_key = str(item.get("market_key") or item.get("marketKey") or "")
+        return bool(wishlist_key and wishlist_key == listing_key)
+    listing_title = normalize_lookup_text(listing.get("title"))
+    wishlist_artist = normalize_lookup_text(item.get("artist"))
+    listing_artist = normalize_lookup_text(listing.get("artist"))
+    wishlist_year = str(item.get("year") or "").strip()
+    listing_year = str(listing.get("year") or "").strip()
+    year_matches = not wishlist_year or wishlist_year == listing_year
+    return listing_title == wishlist_title and (not wishlist_artist or listing_artist == wishlist_artist) and year_matches
+
+
+def listing_identity_signature(listing: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(listing.get("discogs_release_id") or listing.get("discogsReleaseId") or ""),
+        normalize_lookup_text(listing.get("catalog_number") or listing.get("catalogNumber")),
+        normalize_lookup_text(listing.get("title")),
+        normalize_lookup_text(listing.get("artist")),
+        str(listing.get("year") or ""),
+        normalize_lookup_text(listing.get("release_country") or listing.get("releaseCountry")),
+        str(listing.get("status") or "published").lower(),
+    )
+
+
+def wishlist_notification_for_listing(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    market_key = str(listing.get("market_key") or listing.get("marketKey") or normalize_market_key(listing))
+    listing_id = str(listing.get("id") or "")
+    seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
+    if not listing_id or not market_key:
+        return []
+    wishlist_items = [
+        item
+        for item in read_list(WISHLIST_PATH)
+        if wishlist_matches_listing(item, listing)
+        and str(item.get("user_id") or item.get("userId") or "") != seller_id
+    ]
+    if not wishlist_items:
+        return []
+    notifications = read_list(NOTIFICATIONS_PATH)
+    existing_ids = {str(item.get("id")) for item in notifications}
+    created: list[dict[str, Any]] = []
+    title = str(listing.get("title") or "위시리스트 LP")
+    artist = str(listing.get("artist") or "")
+    price = int(listing.get("price") or 0)
+    for wish in wishlist_items:
+        user_id = str(wish.get("user_id") or wish.get("userId") or "")
+        wishlist_id = str(wish.get("id") or "")
+        if not user_id:
+            continue
+        notification_id = stable_id("notif", f"wishlist:{user_id}:{wishlist_id}:{listing_id}")
+        if notification_id in existing_ids:
+            continue
+        notification = {
+            "id": notification_id,
+            "userId": user_id,
+            "type": "listing",
+            "title": "위시리스트 앨범 입고",
+            "message": f"{title}{f' - {artist}' if artist else ''} 판매글이 {price:,}원에 새로 올라왔습니다.",
+            "timestamp": now_iso(),
+            "isRead": False,
+            "link": f"/app/album/{listing_id}",
+            "listingId": listing_id,
+            "wishlistId": wishlist_id,
+            "marketKey": market_key,
+        }
+        notifications.insert(0, notification)
+        existing_ids.add(notification_id)
+        created.append(notification)
+    if created:
+        write_json(NOTIFICATIONS_PATH, notifications[:500])
+    return created
+
+
 def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
     price = int(item.get("price") or 0)
+    min_price = int(item.get("min_price") or item.get("minPrice") or price * 0.9)
+    max_price = int(item.get("max_price") or item.get("maxPrice") or price * 1.12)
+    base_price = int(item.get("base_price") or item.get("basePrice") or 0)
+    recommended_price = int(item.get("recommended_price") or item.get("recommendedPrice") or 0)
+    instant_sale_price = int(item.get("instant_sale_price") or item.get("instantSalePrice") or 0)
+    seller_price = int(item.get("seller_price") or item.get("sellerPrice") or price)
+    favorite_count = int(item.get("favorite_count") or item.get("favoriteCount") or 0)
+    view_count = int(item.get("view_count") or item.get("viewCount") or item.get("views") or 0)
+    buy_order_count = int(item.get("buy_order_count") or item.get("buyOrderCount") or 0)
+    market_key = item.get("market_key") or item.get("marketKey") or ""
+    wishlist_count = wishlist_count_for_listing({**item, "market_key": market_key}) if market_key or item.get("title") else 0
     seller_id = item.get("seller_id") or item.get("user_id") or "seller1"
     users = read_json(USERS_PATH, {})
     seller = users.get(str(seller_id), {}) if isinstance(users, dict) else {}
@@ -379,8 +642,12 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
         "year": int(item.get("year") or 0),
         "genre": item.get("genre") or "기타",
         "catalogNumber": item.get("catalog_number") or item.get("catalogNumber") or "",
+        "discogsReleaseId": int(item.get("discogs_release_id") or item.get("discogsReleaseId") or 0) or None,
+        "discogsCoverImageUrl": item.get("discogs_cover_image_url") or item.get("discogsCoverImageUrl") or "",
+        "releaseLabel": item.get("release_label") or item.get("releaseLabel") or "",
+        "releaseCountry": item.get("release_country") or item.get("releaseCountry") or "",
         "price": price,
-        "priceRange": {"min": int(price * 0.9), "max": int(price * 1.12)},
+        "priceRange": {"min": min_price, "max": max_price},
         "audioGrade": item.get("audio_grade") or item.get("audioGrade") or "VG",
         "audioScore": int(item.get("audio_score") or item.get("audioScore") or 0),
         "audioSamples": audio_samples if isinstance(audio_samples, dict) else {},
@@ -402,10 +669,80 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
             "transactionCount": int(seller.get("transactionCount", 0) or 0),
         },
         "location": item.get("location") or "서울",
-        "views": int(item.get("views") or 0),
+        "views": view_count,
+        "viewCount": view_count,
+        "favoriteCount": favorite_count,
+        "buyOrderCount": buy_order_count,
+        "wishlistCount": wishlist_count,
+        "marketKey": market_key,
+        "basePrice": base_price,
+        "minPrice": min_price,
+        "maxPrice": max_price,
+        "recommendedPrice": recommended_price,
+        "instantSalePrice": instant_sale_price,
+        "sellerPrice": seller_price,
+        "market": {
+            "marketKey": market_key,
+            "basePrice": base_price,
+            "minPrice": min_price,
+            "maxPrice": max_price,
+            "recommendedPrice": recommended_price,
+            "instantSalePrice": instant_sale_price,
+            "instantSaleAvailable": instant_sale_price > 0,
+            "sellerPrice": seller_price,
+            "isValidPrice": min_price <= price <= max_price if price > 0 else True,
+            "priceStatus": "below_range" if price < min_price else "above_range" if price > max_price else "within_range",
+            "metrics": {
+                "listingCount": 1,
+                "buyOrderCount": buy_order_count,
+                "favoriteCount": favorite_count,
+                "wishlistCount": wishlist_count,
+                "viewCount": view_count,
+                "recentTradeCount": 0,
+            },
+        },
         "createdAt": item.get("created_at") or item.get("createdAt") or now_iso(),
         "status": item.get("status") or "published",
     }
+
+
+def compact_listing_album(album: dict[str, Any]) -> dict[str, Any]:
+    item = dict(album)
+
+    def keep_small_inline_media(value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+        if value.startswith("data:") and len(value) > 120_000:
+            return ""
+        return value
+
+    item["images"] = [
+        compact_image
+        for image in item.get("images", [])
+        if (compact_image := keep_small_inline_media(image))
+    ][:1]
+    item["coverImageDataUrl"] = keep_small_inline_media(item.get("coverImageDataUrl"))
+    item["recordImageDataUrl"] = ""
+    item["recordVideoDataUrl"] = ""
+    item["analysisReport"] = {}
+
+    audio_samples = item.get("audioSamples")
+    if isinstance(audio_samples, dict):
+        compact_samples: dict[str, Any] = {}
+        for key, sample in audio_samples.items():
+            if not isinstance(sample, dict):
+                continue
+            compact_sample: dict[str, Any] = {}
+            for sample_key, value in sample.items():
+                if sample_key == "dataUrl" and isinstance(value, str) and value.startswith("data:"):
+                    continue
+                compact_sample[sample_key] = value
+            compact_samples[key] = compact_sample
+        item["audioSamples"] = compact_samples
+    else:
+        item["audioSamples"] = {}
+
+    return item
 
 
 def all_albums() -> list[dict[str, Any]]:
@@ -440,7 +777,7 @@ async def login(payload: AuthLogin):
         raise HTTPException(status_code=401, detail="이전 임시 계정입니다. 같은 아이디와 이메일로 회원가입을 다시 완료해 비밀번호를 등록해 주세요.")
     if not user or not verify_password(payload.password, user.get("passwordHash")):
         raise HTTPException(status_code=401, detail="아이디 또는 비밀번호가 올바르지 않습니다.")
-    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
+    return {"token": create_session(str(user["id"]), payload.rememberMe), "user": public_user(user)}
 
 
 @router.post("/auth/check")
@@ -463,7 +800,7 @@ async def request_email_verification(payload: EmailVerificationRequest):
     code = verification_code()
     token_key = f"email:{email}:{code}"
     tokens = prune_expired_tokens(read_json(EMAIL_VERIFICATION_PATH, {}))
-    tokens[token_key] = {
+    token = {
         "type": "email-verification",
         "email": email,
         "code": code,
@@ -471,7 +808,6 @@ async def request_email_verification(payload: EmailVerificationRequest):
         "createdAt": now_iso(),
         "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
     }
-    write_json(EMAIL_VERIFICATION_PATH, tokens)
     sent = send_mail(
         email,
         "[Vinyl-Check] 이메일 인증번호",
@@ -479,8 +815,12 @@ async def request_email_verification(payload: EmailVerificationRequest):
     )
     response = {"message": "인증번호를 이메일로 발송했습니다.", "sent": sent}
     if not sent:
+        if not allow_dev_auth_code("ALLOW_DEV_EMAIL_VERIFICATION_CODE"):
+            raise HTTPException(status_code=503, detail="메일 발송에 실패했습니다. SMTP 설정을 확인해 주세요.")
         response["message"] = "메일 발송 설정이 없어 개발용 인증번호를 표시합니다."
         response["devVerificationCode"] = code
+    tokens[token_key] = token
+    write_json(EMAIL_VERIFICATION_PATH, tokens)
     return response
 
 
@@ -548,7 +888,7 @@ async def signup(payload: AuthSignup):
     save_user(user)
     tokens.pop(verified_key, None)
     write_json(EMAIL_VERIFICATION_PATH, tokens)
-    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
+    return {"token": create_session(str(user["id"]), True), "user": public_user(user)}
 
 
 @router.post("/auth/google")
@@ -584,16 +924,85 @@ async def google_login(payload: GoogleLogin):
     user["createdAt"] = existing.get("createdAt") if existing else now_iso()
     user["updatedAt"] = now_iso()
     save_user(user)
-    return {"token": stable_id("token", user["id"] + now_iso()), "user": public_user(user)}
+    return {"token": create_session(str(user["id"]), True), "user": public_user(user)}
+
+
+@router.post("/auth/logout")
+async def logout(
+    _user_id: Annotated[str, Depends(require_user_id)],
+    authorization: Annotated[str | None, Header()] = None,
+):
+    revoke_session(authorization)
+    return {"ok": True}
 
 
 @router.post("/auth/find-id")
 async def find_id(payload: FindIdRequest):
+    return await find_id_request(payload)
+
+
+@router.post("/auth/find-id/request")
+async def find_id_request(payload: FindIdRequest):
     email = normalize_email(payload.email)
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="올바른 이메일을 입력해 주세요.")
     users = read_json(USERS_PATH, {})
     user = find_user_by_email(users, email)
     if not user:
         raise HTTPException(status_code=404, detail="해당 이메일로 가입된 계정을 찾지 못했습니다.")
+
+    code = verification_code()
+    token_key = f"find-id:{email}:{code}"
+    tokens = prune_expired_tokens(read_json(FIND_ID_TOKENS_PATH, {}))
+    token = {
+        "type": "find-id",
+        "email": email,
+        "userId": user["id"],
+        "code": code,
+        "used": False,
+        "createdAt": now_iso(),
+        "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+    }
+    mail_sent = send_mail(
+        email,
+        "[Vinyl-Check] 아이디 찾기 인증번호",
+        f"아래 인증번호를 앱의 아이디 찾기 화면에 입력해 주세요.\n\n{code}\n\n이 코드는 10분 후 만료됩니다.",
+    )
+    if not mail_sent and not allow_dev_auth_code("ALLOW_DEV_FIND_ID_CODE"):
+        raise HTTPException(status_code=503, detail="메일 발송에 실패했습니다. SMTP 설정을 확인해 주세요.")
+    response = {
+        "message": "가입된 이메일로 아이디 찾기 인증번호를 발송했습니다."
+        if mail_sent
+        else "메일 설정이 없어 개발용 아이디 찾기 인증번호를 표시합니다.",
+        "sent": mail_sent,
+    }
+    if not mail_sent and allow_dev_auth_code("ALLOW_DEV_FIND_ID_CODE"):
+        response["devFindIdCode"] = code
+    tokens[token_key] = token
+    write_json(FIND_ID_TOKENS_PATH, tokens)
+    return response
+
+
+@router.post("/auth/find-id/confirm")
+async def find_id_confirm(payload: FindIdConfirm):
+    email = normalize_email(payload.email)
+    code = payload.code.strip()
+    token_key = f"find-id:{email}:{code}"
+    tokens = prune_expired_tokens(read_json(FIND_ID_TOKENS_PATH, {}))
+    token = tokens.get(token_key)
+    if not token or token.get("used"):
+        write_json(FIND_ID_TOKENS_PATH, tokens)
+        raise HTTPException(status_code=400, detail="인증번호가 올바르지 않거나 만료되었습니다.")
+    if str(token.get("email")) != email:
+        raise HTTPException(status_code=400, detail="이메일과 인증번호가 일치하지 않습니다.")
+    users = read_json(USERS_PATH, {})
+    user = find_user_by_email(users, email) or users.get(str(token.get("userId") or ""))
+    if not user:
+        raise HTTPException(status_code=404, detail="해당 이메일로 가입된 계정을 찾지 못했습니다.")
+    token["used"] = True
+    token["usedAt"] = now_iso()
+    tokens[token_key] = token
+    write_json(FIND_ID_TOKENS_PATH, tokens)
     username = str(user.get("username", ""))
     return {"message": "가입된 아이디를 찾았습니다.", "username": username, "maskedUsername": mask_username(username)}
 
@@ -611,26 +1020,29 @@ async def password_reset_request(payload: PasswordResetRequest):
     reset_code = verification_code()
     tokens = read_json(RESET_TOKENS_PATH, {})
     token_key = f"password-reset:{reset_code}"
-    tokens[token_key] = {
+    token = {
         "type": "password-reset",
         "userId": user["id"],
         "email": email,
         "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat(),
         "used": False,
     }
-    write_json(RESET_TOKENS_PATH, tokens)
     mail_sent = send_mail(
         email,
         "[Vinyl-Check] 비밀번호 재설정 코드",
         f"아래 코드를 앱의 비밀번호 찾기 화면에 입력해 주세요.\n\n{reset_code}\n\n이 코드는 30분 후 만료됩니다.",
     )
+    if not mail_sent and not allow_dev_auth_code("ALLOW_DEV_RESET_CODE"):
+        raise HTTPException(status_code=503, detail="메일 발송에 실패했습니다. SMTP 설정을 확인해 주세요.")
     response = {
         "message": "가입된 이메일로 비밀번호 재설정 코드를 발송했습니다."
         if mail_sent
-        else "메일 설정이 없어 앱 화면에 재설정 코드를 표시합니다."
+        else "메일 설정이 없어 개발용 재설정 코드를 표시합니다."
     }
-    if not mail_sent or os.getenv("ALLOW_DEV_RESET_CODE", "false").lower() in {"1", "true", "yes"}:
+    if not mail_sent and allow_dev_auth_code("ALLOW_DEV_RESET_CODE"):
         response["devResetCode"] = reset_code
+    tokens[token_key] = token
+    write_json(RESET_TOKENS_PATH, tokens)
     return response
 
 
@@ -1027,9 +1439,13 @@ async def chat_websocket(websocket: WebSocket, chat_id: str):
 async def list_listings(q: str | None = None):
     listings = all_albums()
     if not q:
-        return listings
+        return [compact_listing_album(item) for item in listings]
     normalized = q.lower()
-    return [item for item in listings if normalized in item["title"].lower() or normalized in item["artist"].lower()]
+    return [
+        compact_listing_album(item)
+        for item in listings
+        if normalized in item["title"].lower()
+    ]
 
 
 @router.post("/listings")
@@ -1042,18 +1458,27 @@ async def create_listing(payload: ListingCreate):
     listing["seller_id"] = payload.user_id or "seller1"
     listing["created_at"] = now_iso()
     listing["views"] = 0
-    listings = read_json(LISTINGS_PATH, [])
+    listing["view_count"] = 0
+    listing["favorite_count"] = 0
+    listings = read_list(LISTINGS_PATH)
+    ok, estimate, message = validate_listing_price(listing, listings, read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH))
+    if not ok:
+        raise HTTPException(status_code=422, detail=market_validation_detail(message, estimate))
+    apply_market_snapshot(listing, estimate)
     listings.insert(0, listing)
     write_json(LISTINGS_PATH, listings)
+    wishlist_notification_for_listing(listing)
     return {"status": "ok", "persisted": True, "listing": listing_to_album(listing)}
 
 
 @router.put("/listings/{listing_id}")
 async def update_listing(listing_id: str, payload: ListingCreate, user_id: str | None = None):
-    listings = read_json(LISTINGS_PATH, [])
+    listings = read_list(LISTINGS_PATH)
     updated: dict[str, Any] | None = None
+    previous_signature: tuple[str, ...] | None = None
     for listing in listings:
         if str(listing.get("id")) == listing_id:
+            previous_signature = listing_identity_signature(listing)
             seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
             if user_id and seller_id and seller_id != user_id:
                 raise HTTPException(status_code=403, detail="판매글을 수정할 권한이 없습니다.")
@@ -1064,11 +1489,17 @@ async def update_listing(listing_id: str, payload: ListingCreate, user_id: str |
             listing["id"] = listing_id
             listing["seller_id"] = seller_id or payload.user_id or "seller1"
             listing["updated_at"] = now_iso()
+            ok, estimate, message = validate_listing_price(listing, listings, read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH))
+            if not ok:
+                raise HTTPException(status_code=422, detail=market_validation_detail(message, estimate))
+            apply_market_snapshot(listing, estimate)
             updated = listing
             break
     if not updated:
         raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
     write_json(LISTINGS_PATH, listings)
+    if previous_signature != listing_identity_signature(updated):
+        wishlist_notification_for_listing(updated)
     return {"status": "ok", "persisted": True, "listing": listing_to_album(updated)}
 
 
@@ -1090,14 +1521,596 @@ async def hide_listing(listing_id: str, user_id: str | None = None):
     return {"status": "hidden", "listingId": listing_id}
 
 
+def find_raw_listing(listing_id: str, listings: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
+    source = listings if listings is not None else read_list(LISTINGS_PATH)
+    for listing in source:
+        if str(listing.get("id")) == str(listing_id):
+            return listing
+    return next((item for item in MOCK_LISTINGS if str(item.get("id")) == str(listing_id)), None)
+
+
+def compact_buy_order(order: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(order.get("id") or ""),
+        "buyerId": str(order.get("buyer_id") or order.get("buyerId") or ""),
+        "listingId": order.get("listing_id") or order.get("listingId"),
+        "marketKey": str(order.get("market_key") or order.get("marketKey") or ""),
+        "maxPrice": int(order.get("max_price") or order.get("maxPrice") or 0),
+        "minMediaGrade": str(order.get("min_media_grade") or order.get("minMediaGrade") or "G"),
+        "minSleeveGrade": str(order.get("min_sleeve_grade") or order.get("minSleeveGrade") or "G"),
+        "pressingCondition": order.get("pressing_condition") or order.get("pressingCondition"),
+        "isFirstPressOnly": bool(order.get("is_first_press_only") or order.get("isFirstPressOnly") or False),
+        "regionPreference": order.get("region_preference") or order.get("regionPreference"),
+        "status": str(order.get("status") or "active"),
+        "createdAt": str(order.get("created_at") or order.get("createdAt") or now_iso()),
+        "updatedAt": order.get("updated_at") or order.get("updatedAt"),
+    }
+
+
+@router.get("/market/price-estimate")
+async def get_market_price_estimate(
+    listing_id: str | None = None,
+    title: str | None = None,
+    artist: str | None = None,
+    catalog_number: str | None = None,
+    price: int | None = None,
+    year: int | None = None,
+    audio_grade: str | None = None,
+    jacket_grade: str | None = None,
+    pressing_condition: str | None = None,
+    is_first_press: bool = False,
+    is_rare: bool = False,
+    location: str | None = None,
+):
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(listing_id, listings) if listing_id else None
+    if listing is None:
+        listing = {
+            "id": listing_id or "draft",
+            "title": title or "Untitled",
+            "artist": artist or "Unknown artist",
+            "catalog_number": catalog_number,
+            "price": price or 0,
+            "year": year,
+            "audio_grade": audio_grade or "VG+",
+            "jacket_grade": jacket_grade or audio_grade or "VG+",
+            "pressing_condition": pressing_condition,
+            "is_first_press": is_first_press,
+            "is_rare": is_rare,
+            "location": location,
+        }
+    if price is not None:
+        listing = {**listing, "price": price, "seller_price": price}
+    estimate = build_market_estimate(listing, listings, read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH), seller_price=price)
+    return enrich_estimate_with_wishlist(estimate, listing)
+
+
+@router.post("/market/buy-orders")
+async def create_buy_order(payload: BuyOrderCreate):
+    if payload.max_price <= 0:
+        raise HTTPException(status_code=400, detail="구매 대기 가격을 입력해 주세요.")
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(payload.listing_id, listings) if payload.listing_id else None
+    market_key = payload.market_key or (normalize_market_key(listing) if listing else "")
+    if not market_key:
+        raise HTTPException(status_code=400, detail="listing_id 또는 market_key가 필요합니다.")
+    order = {
+        "id": f"buy-order-{uuid4().hex[:10]}",
+        "buyer_id": payload.buyer_id,
+        "listing_id": payload.listing_id,
+        "market_key": market_key,
+        "max_price": payload.max_price,
+        "min_media_grade": payload.min_media_grade,
+        "min_sleeve_grade": payload.min_sleeve_grade,
+        "pressing_condition": payload.pressing_condition,
+        "is_first_press_only": payload.is_first_press_only,
+        "region_preference": payload.region_preference,
+        "status": payload.status if payload.status in {"active", "paused"} else "active",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    buy_orders = read_list(BUY_ORDERS_PATH)
+    buy_orders.insert(0, order)
+    write_json(BUY_ORDERS_PATH, buy_orders)
+    updated_listing = None
+    if listing and listing in listings:
+        recalculate_listing_market(listing, listings)
+        write_json(LISTINGS_PATH, listings)
+        updated_listing = listing_to_album(listing)
+    matches = find_matching_buy_orders(listing, buy_orders) if listing else []
+    return {
+        "status": "ok",
+        "persisted": True,
+        "buyOrder": compact_buy_order(order),
+        "matches": [compact_buy_order(item) for item in matches],
+        "listing": updated_listing,
+    }
+
+
+@router.get("/market/buy-orders/matches")
+async def get_buy_order_matches(listing_id: str):
+    listing = find_raw_listing(listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    matches = find_matching_buy_orders(listing, read_list(BUY_ORDERS_PATH))
+    return {
+        "listingId": listing_id,
+        "marketKey": normalize_market_key(listing),
+        "matches": [compact_buy_order(item) for item in matches],
+        "instantSalePrice": calculate_instant_sale_price(listing, matches),
+    }
+
+
+@router.post("/market/listings/{listing_id}/instant-sell")
+async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | None = None):
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(listing_id, listings)
+    if not listing or listing not in listings:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
+    if payload and payload.seller_id and seller_id and payload.seller_id != seller_id:
+        raise HTTPException(status_code=403, detail="즉시 판매 권한이 없습니다.")
+    if str(listing.get("status") or "published") in {"hidden", "sold"}:
+        raise HTTPException(status_code=400, detail="판매 가능한 상태가 아닙니다.")
+
+    buy_orders = read_list(BUY_ORDERS_PATH)
+    matches = find_matching_buy_orders(listing, buy_orders)
+    if not matches:
+        raise HTTPException(status_code=404, detail="조건에 맞는 구매 대기가 없습니다.")
+    order = matches[0]
+    sale_price = int(order.get("max_price") or order.get("maxPrice") or 0)
+    transaction_id = f"tx-{uuid4().hex[:10]}"
+    now = now_iso()
+
+    listing["status"] = "reserved"
+    listing["reserved_at"] = now
+    listing["buyer_id"] = order.get("buyer_id") or order.get("buyerId")
+    listing["instant_sale_price"] = sale_price
+    listing["sold_price"] = sale_price
+    recalculate_listing_market(listing, listings)
+
+    for stored_order in buy_orders:
+        if str(stored_order.get("id")) == str(order.get("id")):
+            stored_order["status"] = "matched"
+            stored_order["matched_listing_id"] = listing_id
+            stored_order["matched_at"] = now
+            stored_order["transaction_id"] = transaction_id
+            stored_order["updated_at"] = now
+            order = stored_order
+            break
+    recalculate_listing_market(listing, listings)
+
+    transaction = {
+        "id": transaction_id,
+        "type": "instant_sale",
+        "listing_id": listing_id,
+        "listingId": listing_id,
+        "buyer_id": order.get("buyer_id") or order.get("buyerId"),
+        "buyerId": order.get("buyer_id") or order.get("buyerId"),
+        "seller_id": seller_id,
+        "sellerId": seller_id,
+        "price": sale_price,
+        "status": "matched",
+        "created_at": now,
+        "createdAt": now,
+    }
+    history_item = {
+        "id": f"market-history-{uuid4().hex[:10]}",
+        "market_key": normalize_market_key(listing),
+        "listing_id": listing_id,
+        "trade_price": sale_price,
+        "event": "instant_sale",
+        "created_at": now,
+    }
+    transactions = read_list(TRANSACTIONS_PATH)
+    transactions.insert(0, transaction)
+    history = read_list(MARKET_PRICE_HISTORY_PATH)
+    history.append(history_item)
+    write_json(LISTINGS_PATH, listings)
+    write_json(BUY_ORDERS_PATH, buy_orders)
+    write_json(TRANSACTIONS_PATH, transactions)
+    write_json(MARKET_PRICE_HISTORY_PATH, history)
+    return {
+        "status": "ok",
+        "listing": listing_to_album(listing),
+        "buyOrder": compact_buy_order(order),
+        "transaction": transaction,
+        "priceHistory": history_item,
+    }
+
+
+@router.get("/market/listings/{listing_id}/market-advice")
+async def get_market_advice(listing_id: str):
+    listing = find_raw_listing(listing_id)
+    if not listing:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    result = build_market_advice(listing, read_list(LISTINGS_PATH), read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH))
+    enrich_estimate_with_wishlist(result["estimate"], listing)
+    return {"listingId": listing_id, **result}
+
+
+@router.post("/market/listings/{listing_id}/view")
+async def record_listing_view(listing_id: str):
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(listing_id, listings)
+    if not listing or listing not in listings:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    next_count = int(listing.get("view_count") or listing.get("views") or 0) + 1
+    listing["views"] = next_count
+    listing["view_count"] = next_count
+    recalculate_listing_market(listing, listings)
+    write_json(LISTINGS_PATH, listings)
+    return {"status": "ok", "listing": listing_to_album(listing)}
+
+
+@router.post("/market/listings/{listing_id}/favorite")
+async def record_listing_favorite(listing_id: str, delta: int = 1):
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(listing_id, listings)
+    if not listing or listing not in listings:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    next_count = max(0, int(listing.get("favorite_count") or listing.get("favoriteCount") or 0) + (1 if delta >= 0 else -1))
+    listing["favorite_count"] = next_count
+    recalculate_listing_market(listing, listings)
+    write_json(LISTINGS_PATH, listings)
+    return {"status": "ok", "listing": listing_to_album(listing)}
+
+
+def compact_wishlist_item(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(item.get("id") or ""),
+        "userId": str(item.get("user_id") or item.get("userId") or ""),
+        "listingId": item.get("listing_id") or item.get("listingId"),
+        "marketKey": str(item.get("market_key") or item.get("marketKey") or ""),
+        "title": str(item.get("title") or ""),
+        "artist": str(item.get("artist") or ""),
+        "catalogNumber": str(item.get("catalog_number") or item.get("catalogNumber") or ""),
+        "discogsReleaseId": int(item.get("discogs_release_id") or item.get("discogsReleaseId") or 0) or None,
+        "coverImageUrl": str(item.get("cover_image_url") or item.get("coverImageUrl") or ""),
+        "releaseLabel": str(item.get("release_label") or item.get("releaseLabel") or ""),
+        "releaseCountry": str(item.get("release_country") or item.get("releaseCountry") or ""),
+        "year": item.get("year"),
+        "pressingCondition": item.get("pressing_condition") or item.get("pressingCondition"),
+        "visibility": "public" if str(item.get("visibility") or "private") == "public" else "private",
+        "status": str(item.get("status") or "active"),
+        "createdAt": str(item.get("created_at") or item.get("createdAt") or now_iso()),
+        "updatedAt": item.get("updated_at") or item.get("updatedAt"),
+    }
+
+
+def wishlist_identity_key(item: dict[str, Any]) -> str:
+    release_id = int(item.get("discogs_release_id") or item.get("discogsReleaseId") or 0)
+    if release_id:
+        return f"release:{release_id}"
+    catalog = normalize_lookup_text(item.get("catalog_number") or item.get("catalogNumber"))
+    if catalog:
+        return f"catalog:{catalog}"
+    title = normalize_lookup_text(item.get("title"))
+    artist = normalize_lookup_text(item.get("artist"))
+    year = str(item.get("year") or "")
+    return f"album:{title}|artist:{artist}|year:{year}"
+
+
+def wishlist_matches_for_item(item: dict[str, Any]) -> list[dict[str, Any]]:
+    owner_id = str(item.get("user_id") or item.get("userId") or "")
+    persisted = read_list(LISTINGS_PATH)
+    source = [*persisted, *MOCK_LISTINGS]
+    matches = [
+        listing_to_album(listing)
+        for listing in source
+        if wishlist_matches_listing(item, listing)
+        and str(listing.get("seller_id") or listing.get("user_id") or (listing.get("seller") or {}).get("id") or "") != owner_id
+    ]
+    matches.sort(key=lambda listing: str(listing.get("createdAt") or ""), reverse=True)
+    return matches
+
+
+@router.get("/market/wishlist")
+async def get_wishlist(user_id: Annotated[str, Depends(require_user_id)]):
+    items = [
+        compact_wishlist_item(item)
+        for item in read_list(WISHLIST_PATH)
+        if str(item.get("user_id") or item.get("userId") or "") == user_id
+        and str(item.get("status") or "active") == "active"
+    ]
+    return {"wishlist": items}
+
+
+@router.get("/users/{profile_user_id}/wishlist/public")
+async def get_public_wishlist(profile_user_id: str):
+    items = [
+        compact_wishlist_item(item)
+        for item in read_list(WISHLIST_PATH)
+        if str(item.get("user_id") or item.get("userId") or "") == profile_user_id
+        and str(item.get("status") or "active") == "active"
+        and str(item.get("visibility") or "private") == "public"
+    ]
+    return {"wishlist": items}
+
+
+@router.post("/market/wishlist")
+async def create_wishlist_item(payload: WishlistCreate, user_id: Annotated[str, Depends(require_user_id)]):
+    listings = read_list(LISTINGS_PATH)
+    listing = find_raw_listing(payload.listing_id, listings) if payload.listing_id else None
+    draft_listing = listing or {
+        "title": payload.title or "Untitled",
+        "artist": payload.artist or "Unknown artist",
+        "catalog_number": payload.catalog_number,
+        "discogs_release_id": payload.discogs_release_id,
+        "discogs_cover_image_url": payload.cover_image_url,
+        "release_label": payload.release_label,
+        "release_country": payload.release_country,
+        "year": payload.year,
+        "pressing_condition": payload.pressing_condition,
+    }
+    market_key = payload.market_key or normalize_market_key(draft_listing)
+    if not market_key or (not payload.title and not payload.catalog_number and not payload.discogs_release_id and not listing):
+        raise HTTPException(status_code=400, detail="앨범명, 카탈로그 번호 또는 Discogs 발매본 정보가 필요합니다.")
+    visibility = "public" if payload.visibility == "public" else "private"
+    candidate_item = {
+        "discogs_release_id": (listing or draft_listing).get("discogs_release_id") or payload.discogs_release_id,
+        "catalog_number": (listing or draft_listing).get("catalog_number") or payload.catalog_number,
+        "title": (listing or draft_listing).get("title") or payload.title,
+        "artist": (listing or draft_listing).get("artist") or payload.artist,
+        "year": (listing or draft_listing).get("year") or payload.year,
+    }
+    identity_key = wishlist_identity_key(candidate_item)
+    wishlist = read_list(WISHLIST_PATH)
+    existing = next(
+        (
+            item
+            for item in wishlist
+            if str(item.get("user_id") or item.get("userId") or "") == user_id
+            and wishlist_identity_key(item) == identity_key
+            and str(item.get("status") or "active") == "active"
+        ),
+        None,
+    )
+    if existing:
+        return {"status": "ok", "wishlistItem": compact_wishlist_item(existing), "listing": listing_to_album(listing) if listing else None}
+
+    item = {
+        "id": f"wishlist-{uuid4().hex[:10]}",
+        "user_id": user_id,
+        "listing_id": payload.listing_id,
+        "market_key": market_key,
+        "title": (listing or draft_listing).get("title") or payload.title or "",
+        "artist": (listing or draft_listing).get("artist") or payload.artist or "",
+        "catalog_number": (listing or draft_listing).get("catalog_number") or payload.catalog_number or "",
+        "discogs_release_id": (listing or draft_listing).get("discogs_release_id") or payload.discogs_release_id,
+        "cover_image_url": (listing or draft_listing).get("discogs_cover_image_url") or payload.cover_image_url or "",
+        "release_label": (listing or draft_listing).get("release_label") or payload.release_label or "",
+        "release_country": (listing or draft_listing).get("release_country") or payload.release_country or "",
+        "year": (listing or draft_listing).get("year") or payload.year,
+        "pressing_condition": (listing or draft_listing).get("pressing_condition") or payload.pressing_condition,
+        "visibility": visibility,
+        "status": "active",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    wishlist.insert(0, item)
+    write_json(WISHLIST_PATH, wishlist)
+    if listing and listing in listings:
+        recalculate_listing_market(listing, listings)
+        write_json(LISTINGS_PATH, listings)
+    return {"status": "ok", "wishlistItem": compact_wishlist_item(item), "listing": listing_to_album(listing) if listing else None}
+
+
+@router.put("/market/wishlist/{wishlist_id}")
+async def update_wishlist_item(wishlist_id: str, payload: WishlistUpdate, user_id: Annotated[str, Depends(require_user_id)]):
+    wishlist = read_list(WISHLIST_PATH)
+    item = next(
+        (
+            stored
+            for stored in wishlist
+            if str(stored.get("id")) == wishlist_id
+            and str(stored.get("user_id") or stored.get("userId") or "") == user_id
+            and str(stored.get("status") or "active") == "active"
+        ),
+        None,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="위시리스트 항목을 찾을 수 없습니다.")
+    updates = payload.model_dump(exclude_unset=True)
+    field_map = {
+        "catalog_number": "catalog_number",
+        "discogs_release_id": "discogs_release_id",
+        "cover_image_url": "cover_image_url",
+        "release_label": "release_label",
+        "release_country": "release_country",
+        "pressing_condition": "pressing_condition",
+    }
+    for key in ("title", "artist", "year"):
+        if key in updates:
+            item[key] = updates[key]
+    for source_key, target_key in field_map.items():
+        if source_key in updates:
+            item[target_key] = updates[source_key]
+    if "visibility" in updates:
+        item["visibility"] = "public" if updates["visibility"] == "public" else "private"
+    if not item.get("title") and not item.get("catalog_number") and not item.get("discogs_release_id"):
+        raise HTTPException(status_code=400, detail="앨범명, 카탈로그 번호 또는 Discogs 발매본 정보가 필요합니다.")
+    item["market_key"] = normalize_market_key(item)
+    item["updated_at"] = now_iso()
+    write_json(WISHLIST_PATH, wishlist)
+    return {"status": "ok", "wishlistItem": compact_wishlist_item(item)}
+
+
+@router.get("/market/wishlist/{wishlist_id}/matches")
+async def get_wishlist_matches(wishlist_id: str, user_id: Annotated[str, Depends(require_user_id)]):
+    item = next(
+        (
+            stored
+            for stored in read_list(WISHLIST_PATH)
+            if str(stored.get("id")) == wishlist_id
+            and str(stored.get("user_id") or stored.get("userId") or "") == user_id
+            and str(stored.get("status") or "active") == "active"
+        ),
+        None,
+    )
+    if not item:
+        raise HTTPException(status_code=404, detail="위시리스트 항목을 찾을 수 없습니다.")
+    return {"wishlistId": wishlist_id, "matches": wishlist_matches_for_item(item)}
+
+
+@router.delete("/market/wishlist/{wishlist_id}")
+async def delete_wishlist_item(wishlist_id: str, user_id: Annotated[str, Depends(require_user_id)]):
+    wishlist = read_list(WISHLIST_PATH)
+    updated: dict[str, Any] | None = None
+    for item in wishlist:
+        if str(item.get("id")) == wishlist_id and str(item.get("user_id") or item.get("userId") or "") == user_id:
+            item["status"] = "inactive"
+            item["updated_at"] = now_iso()
+            updated = item
+            break
+    if not updated:
+        raise HTTPException(status_code=404, detail="위시리스트 항목을 찾을 수 없습니다.")
+    write_json(WISHLIST_PATH, wishlist)
+    return {"status": "ok", "wishlistItem": compact_wishlist_item(updated)}
+
+
+def collection_owner(user_id: str) -> dict[str, Any]:
+    user = read_json(USERS_PATH, {}).get(user_id, {})
+    return {
+        "id": user_id,
+        "name": str(user.get("username") or "사용자"),
+        "rating": float(user.get("rating") or 0),
+        "transactionCount": int(user.get("transactionCount") or 0),
+    }
+
+
+def normalize_collection(item: dict[str, Any]) -> dict[str, Any]:
+    owner_id = str(item.get("ownerId") or item.get("owner_id") or "")
+    normalized = dict(item)
+    normalized["id"] = str(item.get("id") or f"collection-{uuid4().hex[:10]}")
+    normalized["owner"] = item.get("owner") or collection_owner(owner_id)
+    normalized["ownerId"] = owner_id
+    normalized["ownershipStatus"] = str(item.get("ownershipStatus") or "owned")
+    normalized["visibility"] = "private" if item.get("visibility") == "private" else "public"
+    normalized["contactCount"] = int(item.get("contactCount") or 0)
+    normalized["createdAt"] = str(item.get("createdAt") or now_iso())
+    normalized["updatedAt"] = str(item.get("updatedAt") or normalized["createdAt"])
+    discogs_cover = str(item.get("discogsCoverImageUrl") or "").strip()
+    if discogs_cover:
+        record_image = str(item.get("recordImageDataUrl") or "").strip()
+        normalized["coverImageDataUrl"] = None
+        normalized["images"] = [image for image in (discogs_cover, record_image) if image]
+    return normalized
+
+
+def find_collection(collection_id: str) -> dict[str, Any] | None:
+    return next(
+        (normalize_collection(item) for item in read_list(COLLECTIONS_PATH) if str(item.get("id")) == collection_id),
+        None,
+    )
+
+
+def collection_to_album(collection: dict[str, Any]) -> dict[str, Any]:
+    price = int(collection.get("purchasePrice") or 0)
+    images = collection.get("images") or []
+    cover = collection.get("discogsCoverImageUrl") or collection.get("coverImageDataUrl") or ""
+    if cover and cover not in images:
+        images = [cover, *images]
+    return {
+        "id": collection["id"],
+        "title": collection.get("title") or "컬렉션 LP",
+        "artist": collection.get("artist") or "",
+        "year": int(collection.get("year") or 0),
+        "genre": collection.get("genre") or "기타",
+        "catalogNumber": collection.get("catalogNumber") or "",
+        "price": price,
+        "priceRange": {"min": 0, "max": max(price, 0)},
+        "images": images,
+        "audioGrade": collection.get("audioGrade") or "-",
+        "audioScore": int(collection.get("audioScore") or 0),
+        "isRare": bool(collection.get("isRare")),
+        "isFirstPress": bool(collection.get("isFirstPress")),
+        "description": collection.get("notes") or "",
+        "seller": collection["owner"],
+        "location": "",
+        "views": 0,
+        "createdAt": collection["createdAt"],
+    }
+
+
+@router.get("/collections")
+async def get_collections(
+    owner_id: str | None = None,
+    authorization: Annotated[str | None, Header()] = None,
+):
+    viewer_id = optional_user_id(authorization)
+    collections = [normalize_collection(item) for item in read_list(COLLECTIONS_PATH)]
+    visible = [
+        item for item in collections
+        if (not owner_id or item["ownerId"] == owner_id)
+        and (item["visibility"] == "public" or item["ownerId"] == viewer_id)
+    ]
+    return {"collections": visible}
+
+
+@router.post("/collections")
+async def create_collection(payload: CollectionCreate, user_id: Annotated[str, Depends(require_user_id)]):
+    item = payload.model_dump()
+    if not item.get("discogsReleaseId") or not str(item.get("discogsCoverImageUrl") or "").strip():
+        raise HTTPException(status_code=400, detail="Discogs 발매반과 커버 이미지를 선택해 주세요.")
+    item["coverImageDataUrl"] = None
+    item["images"] = [image for image in (item["discogsCoverImageUrl"], item.get("recordImageDataUrl")) if image]
+    item.update({
+        "id": f"collection-{uuid4().hex[:10]}",
+        "ownerId": user_id,
+        "owner": collection_owner(user_id),
+        "contactCount": 0,
+        "createdAt": now_iso(),
+        "updatedAt": now_iso(),
+    })
+    collections = read_list(COLLECTIONS_PATH)
+    collections.insert(0, item)
+    write_json(COLLECTIONS_PATH, collections)
+    return {"status": "ok", "collection": normalize_collection(item)}
+
+
+@router.put("/collections/{collection_id}")
+async def update_collection(
+    collection_id: str,
+    payload: CollectionUpdate,
+    user_id: Annotated[str, Depends(require_user_id)],
+):
+    collections = read_list(COLLECTIONS_PATH)
+    updated: dict[str, Any] | None = None
+    for item in collections:
+        if str(item.get("id")) != collection_id:
+            continue
+        if str(item.get("ownerId") or item.get("owner_id")) != user_id:
+            raise HTTPException(status_code=403, detail="컬렉션을 수정할 권한이 없습니다.")
+        preserved = {key: item.get(key) for key in ("id", "ownerId", "owner", "contactCount", "createdAt")}
+        updates = payload.model_dump()
+        if not updates.get("discogsReleaseId") or not str(updates.get("discogsCoverImageUrl") or "").strip():
+            raise HTTPException(status_code=400, detail="Discogs 발매반과 커버 이미지를 선택해 주세요.")
+        updates["coverImageDataUrl"] = None
+        updates["images"] = [image for image in (updates["discogsCoverImageUrl"], updates.get("recordImageDataUrl")) if image]
+        item.update(updates)
+        item.update(preserved)
+        item["updatedAt"] = now_iso()
+        updated = item
+        break
+    if not updated:
+        raise HTTPException(status_code=404, detail="컬렉션을 찾을 수 없습니다.")
+    write_json(COLLECTIONS_PATH, collections)
+    return {"status": "ok", "collection": normalize_collection(updated)}
+
+
 def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
-    listing_id = str(payload.get("listingId") or payload.get("listing_id") or "")
-    album = find_album(listing_id)
+    collection_id = str(payload.get("collectionId") or payload.get("collection_id") or "")
+    listing_id = str(payload.get("listingId") or payload.get("listing_id") or collection_id)
+    collection = find_collection(collection_id) if collection_id else None
+    album = collection_to_album(collection) if collection else find_album(listing_id)
     buyer_id = str(payload.get("buyerId") or payload.get("buyer_id") or "guest")
     seller_id = str(payload.get("sellerId") or payload.get("seller_id") or "")
     return {
         "id": str(payload.get("id") or f"offer-{uuid4().hex[:10]}"),
         "listingId": listing_id,
+        "collectionId": collection_id or None,
+        "offerType": "collection" if collection else "listing",
         "album": album,
         "buyerId": buyer_id,
         "buyerName": str(payload.get("buyerName") or payload.get("buyer_name") or "게스트"),
@@ -1108,6 +2121,51 @@ def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
         "status": str(payload.get("status") or "pending"),
         "chatId": str(payload.get("chatId") or payload.get("chat_id") or make_one_to_one_chat_id(listing_id, buyer_id, seller_id)),
     }
+
+
+@router.post("/collection-offers")
+async def create_collection_offer(payload: CollectionOfferCreate):
+    collection = find_collection(payload.collectionId)
+    if not collection or collection.get("visibility") != "public":
+        raise HTTPException(status_code=404, detail="공개 컬렉션을 찾을 수 없습니다.")
+    if payload.offerPrice <= 0:
+        raise HTTPException(status_code=400, detail="제안 금액을 확인해 주세요.")
+    seller_id = str(collection["owner"]["id"])
+    if seller_id == payload.buyerId:
+        raise HTTPException(status_code=400, detail="내 컬렉션에는 구매 제안을 보낼 수 없습니다.")
+    offer = normalize_offer({
+        "id": f"offer-{uuid4().hex[:10]}",
+        "listingId": payload.collectionId,
+        "collectionId": payload.collectionId,
+        "buyerId": payload.buyerId,
+        "buyerName": payload.buyerName,
+        "sellerId": seller_id,
+        "sellerName": collection["owner"]["name"],
+        "offerPrice": payload.offerPrice,
+        "timestamp": now_iso(),
+        "status": "pending",
+    })
+    offers = read_list(OFFERS_PATH)
+    offers.insert(0, {key: value for key, value in offer.items() if key != "album"})
+    write_json(OFFERS_PATH, offers)
+    for item in read_list(COLLECTIONS_PATH):
+        if str(item.get("id")) == payload.collectionId:
+            item["contactCount"] = int(item.get("contactCount") or 0) + 1
+            collections = read_list(COLLECTIONS_PATH)
+            for stored in collections:
+                if str(stored.get("id")) == payload.collectionId:
+                    stored["contactCount"] = item["contactCount"]
+            write_json(COLLECTIONS_PATH, collections)
+            break
+    chat_id = offer["chatId"]
+    message = await save_chat_message(chat_id, ChatMessageCreate(
+        sender_id=offer["buyerId"], sender_name=offer["buyerName"],
+        recipient_id=offer["sellerId"], recipient_name=offer["sellerName"],
+        listing_id=payload.collectionId,
+        content=f"컬렉션 LP에 구매 제안 {offer['offerPrice']:,}원을 보냈습니다.", message_type="offer",
+    ))
+    await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
+    return {"status": "ok", "persisted": True, "offer": offer}
 
 
 @router.post("/offers")
@@ -1239,9 +2297,40 @@ async def get_user_chat_requests(user_id: str):
     return {"requests": requests[:50]}
 
 
-@router.get("/users/{user_id}/notifications")
-async def get_user_notifications(user_id: str):
-    notifications: list[dict[str, Any]] = []
+def notification_read_ids(user_id: str) -> set[str]:
+    reads = read_json(NOTIFICATION_READS_PATH, {})
+    values = reads.get(user_id, []) if isinstance(reads, dict) else []
+    return {str(value) for value in values}
+
+
+def save_notification_read_ids(user_id: str, notification_ids: set[str]) -> None:
+    reads = read_json(NOTIFICATION_READS_PATH, {})
+    if not isinstance(reads, dict):
+        reads = {}
+    reads[user_id] = sorted(notification_ids)
+    write_json(NOTIFICATION_READS_PATH, reads)
+
+
+def notification_dismissed_ids(user_id: str) -> set[str]:
+    dismisses = read_json(NOTIFICATION_DISMISSES_PATH, {})
+    values = dismisses.get(user_id, []) if isinstance(dismisses, dict) else []
+    return {str(value) for value in values}
+
+
+def save_notification_dismissed_ids(user_id: str, notification_ids: set[str]) -> None:
+    dismisses = read_json(NOTIFICATION_DISMISSES_PATH, {})
+    if not isinstance(dismisses, dict):
+        dismisses = {}
+    dismisses[user_id] = sorted(notification_ids)
+    write_json(NOTIFICATION_DISMISSES_PATH, dismisses)
+
+
+def collect_user_notifications(user_id: str) -> list[dict[str, Any]]:
+    notifications: list[dict[str, Any]] = [
+        dict(item)
+        for item in read_list(NOTIFICATIONS_PATH)
+        if str(item.get("userId") or item.get("user_id") or "") == user_id
+    ]
     for offer in [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]:
         if offer["sellerId"] == user_id:
             notifications.append({
@@ -1271,8 +2360,68 @@ async def get_user_notifications(user_id: str):
                         "link": f"/transaction/chat/{chat_id}?listingId={message['listingId'] or listing_id_from_chat_id(str(chat_id))}&recipientId={message['senderId']}&recipientName={message['senderName']}",
                     })
                     break
+    unique = {str(item.get("id")): item for item in notifications}
+    notifications = list(unique.values())
+    dismissed_ids = notification_dismissed_ids(user_id)
+    notifications = [item for item in notifications if str(item.get("id")) not in dismissed_ids]
+    read_ids = notification_read_ids(user_id)
+    for notification in notifications:
+        notification["isRead"] = bool(notification.get("isRead") or str(notification.get("id")) in read_ids)
     notifications.sort(key=lambda item: item["timestamp"], reverse=True)
-    return {"notifications": notifications[:50]}
+    return notifications[:50]
+
+
+@router.get("/users/me/notifications")
+async def get_current_user_notifications(user_id: Annotated[str, Depends(require_user_id)]):
+    return {"notifications": collect_user_notifications(user_id)}
+
+
+@router.get("/users/{profile_user_id}/notifications")
+async def get_user_notifications(profile_user_id: str, user_id: Annotated[str, Depends(require_user_id)]):
+    if profile_user_id != user_id:
+        raise HTTPException(status_code=403, detail="다른 사용자의 알림은 볼 수 없습니다.")
+    return {"notifications": collect_user_notifications(user_id)}
+
+
+@router.patch("/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str, user_id: Annotated[str, Depends(require_user_id)]):
+    notifications = collect_user_notifications(user_id)
+    if not any(str(item.get("id")) == notification_id for item in notifications):
+        raise HTTPException(status_code=404, detail="알림을 찾을 수 없습니다.")
+    read_ids = notification_read_ids(user_id)
+    read_ids.add(notification_id)
+    save_notification_read_ids(user_id, read_ids)
+    return {"ok": True, "notificationId": notification_id}
+
+
+@router.delete("/notifications/{notification_id}")
+async def dismiss_notification(notification_id: str, user_id: Annotated[str, Depends(require_user_id)]):
+    notifications = collect_user_notifications(user_id)
+    if not any(str(item.get("id")) == notification_id for item in notifications):
+        raise HTTPException(status_code=404, detail="알림을 찾을 수 없습니다.")
+    dismissed_ids = notification_dismissed_ids(user_id)
+    dismissed_ids.add(notification_id)
+    save_notification_dismissed_ids(user_id, dismissed_ids)
+    read_ids = notification_read_ids(user_id)
+    if notification_id in read_ids:
+        read_ids.remove(notification_id)
+        save_notification_read_ids(user_id, read_ids)
+    unread_count = sum(1 for item in collect_user_notifications(user_id) if not item.get("isRead"))
+    return {"ok": True, "notificationId": notification_id, "unreadCount": unread_count}
+
+
+@router.post("/notifications/read-all")
+async def mark_all_notifications_read(user_id: Annotated[str, Depends(require_user_id)]):
+    read_ids = notification_read_ids(user_id)
+    read_ids.update(str(item.get("id")) for item in collect_user_notifications(user_id))
+    save_notification_read_ids(user_id, read_ids)
+    return {"ok": True, "unreadCount": 0}
+
+
+@router.get("/notifications/unread-count")
+async def get_unread_notification_count(user_id: Annotated[str, Depends(require_user_id)]):
+    count = sum(1 for item in collect_user_notifications(user_id) if not item.get("isRead"))
+    return {"unreadCount": count}
 
 
 @router.get("/listings/{listing_id}/comments")
@@ -1318,144 +2467,7 @@ async def create_comment(listing_id: str, payload: CommentCreate):
 
 
 def surface_condition_from_image(content: bytes, content_type: str | None) -> dict[str, Any] | None:
-    if not (content_type or "").lower().startswith("image/"):
-        return None
-    image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if image is None:
-        return None
-    height, width = image.shape[:2]
-    if min(height, width) < 120:
-        return None
-    scale = min(1.0, 900 / max(height, width))
-    if scale < 1.0:
-        image = cv2.resize(image, (int(width * scale), int(height * scale)), interpolation=cv2.INTER_AREA)
-        height, width = image.shape[:2]
-
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    min_side = min(height, width)
-    blur_variance = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-    exposure = float(np.mean(hsv[:, :, 2]))
-    reflection_mask = cv2.inRange(hsv, np.array([0, 0, 218]), np.array([179, 70, 255]))
-    reflection_ratio = float(np.count_nonzero(reflection_mask)) / float(height * width)
-
-    blurred = cv2.medianBlur(gray, 5)
-    circles = cv2.HoughCircles(
-        blurred,
-        cv2.HOUGH_GRADIENT,
-        dp=1.2,
-        minDist=max(70, min_side // 3),
-        param1=80,
-        param2=22,
-        minRadius=int(min_side * 0.14),
-        maxRadius=int(min_side * 0.52),
-    )
-    disc_circle = None
-    if circles is not None:
-        candidates = np.round(circles[0]).astype(int).tolist()
-        candidates.sort(key=lambda item: item[2], reverse=True)
-        disc_circle = candidates[0]
-
-    reflection_mask = cv2.dilate(reflection_mask, np.ones((5, 5), dtype=np.uint8), iterations=1)
-    analysis_mask = np.ones((height, width), dtype=np.uint8) * 255
-    if disc_circle:
-        cx, cy, radius = disc_circle
-        analysis_mask[:] = 0
-        cv2.circle(analysis_mask, (cx, cy), max(1, radius - 10), 255, -1)
-        cv2.circle(analysis_mask, (cx, cy), max(1, int(radius * 0.24)), 0, -1)
-    analysis_mask = cv2.bitwise_and(analysis_mask, cv2.bitwise_not(reflection_mask))
-
-    equalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
-    edges = cv2.Canny(equalized, 45, 125)
-    edges = cv2.bitwise_and(edges, edges, mask=analysis_mask)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=42, minLineLength=max(38, min_side // 9), maxLineGap=7)
-    scratch_count = 0
-    scratch_regions: list[dict[str, Any]] = []
-    if lines is not None:
-        accepted: list[tuple[float, int, int, int, int]] = []
-        for x1, y1, x2, y2 in lines[:, 0]:
-            length = float(((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5)
-            if length < min_side * 0.10:
-                continue
-            if analysis_mask[y1, x1] == 0 or analysis_mask[y2, x2] == 0:
-                continue
-            if disc_circle:
-                cx, cy, _radius = disc_circle
-                mx = (x1 + x2) / 2.0
-                my = (y1 + y2) / 2.0
-                radial_angle = np.arctan2(my - cy, mx - cx)
-                line_angle = np.arctan2(y2 - y1, x2 - x1)
-                tangent_delta = abs(((line_angle - radial_angle - np.pi / 2 + np.pi) % np.pi) - np.pi / 2)
-                if tangent_delta < 0.18 and length < min_side * 0.22:
-                    continue
-            if any(abs(x1 - ax1) + abs(y1 - ay1) + abs(x2 - ax2) + abs(y2 - ay2) < min_side * 0.18 for _alen, ax1, ay1, ax2, ay2 in accepted):
-                continue
-            accepted.append((length, int(x1), int(y1), int(x2), int(y2)))
-        accepted.sort(reverse=True)
-        scratch_count = len(accepted)
-        for length, x1, y1, x2, y2 in accepted[:14]:
-            scratch_regions.append(
-                {
-                    "x1": round(x1 / width, 4),
-                    "y1": round(y1 / height, 4),
-                    "x2": round(x2 / width, 4),
-                    "y2": round(y2 / height, 4),
-                    "severity": "high" if length >= min_side * 0.34 else "medium" if length >= min_side * 0.20 else "low",
-                }
-            )
-
-    scratch_risk = "high" if scratch_count >= 9 else "medium" if scratch_count >= 3 else "low"
-    reflection_risk = risk_label(reflection_ratio, 0.025, 0.07)
-    quality_penalty = 0
-    if blur_variance < 45:
-        quality_penalty += 10
-    elif blur_variance < 90:
-        quality_penalty += 5
-    if exposure < 45 or exposure > 215:
-        quality_penalty += 8
-    elif exposure < 65 or exposure > 195:
-        quality_penalty += 4
-
-    surface_score = 88 - min(30, scratch_count * 3.2) - min(14, reflection_ratio * 180) - quality_penalty
-    surface_score = int(max(42, min(90, round(surface_score))))
-    confidence = int(max(45, min(92, surface_score + (4 if disc_circle else -6))))
-    signals = [
-        "LP 여부로 감정을 막지 않고, 판매 설명에 쓸 표면 상태를 계산했습니다.",
-        f"스크래치 후보 {scratch_count}개, 반사 위험 {reflection_risk}로 집계했습니다.",
-    ]
-    if quality_penalty:
-        signals.append("초점 흐림 또는 노출 문제가 있어 표면 점수를 보수적으로 낮췄습니다.")
-    if scratch_regions:
-        signals.append("표시된 스크래치 위치는 후보 영역이며 실제 먼지/반사와 함께 확인해야 합니다.")
-    severity_counts = {
-        "high": sum(1 for region in scratch_regions if region.get("severity") == "high"),
-        "medium": sum(1 for region in scratch_regions if region.get("severity") == "medium"),
-        "low": sum(1 for region in scratch_regions if region.get("severity") == "low"),
-    }
-    return {
-        "isRecord": True,
-        "confidence": confidence,
-        "signals": signals,
-        "source": "opencv",
-        "persisted": False,
-        "surfaceScore": surface_score,
-        "scratchCount": scratch_count,
-        "scratchRisk": scratch_risk,
-        "reflectionRisk": reflection_risk,
-        "scratchRegions": scratch_regions,
-        "scratchDetails": {
-            "displayedRegions": len(scratch_regions),
-            "highSeverity": severity_counts["high"],
-            "mediumSeverity": severity_counts["medium"],
-            "lowSeverity": severity_counts["low"],
-            "reflectionRatio": round(reflection_ratio, 4),
-            "blurVariance": round(blur_variance, 1),
-            "exposure": round(exposure, 1),
-            "detectedDisc": bool(disc_circle),
-        },
-        "dustOrReflectionNote": "강한 조명 반사는 먼지나 스크래치처럼 보일 수 있어 각도를 바꾼 추가 촬영을 권장합니다.",
-        "playbackImpact": playback_impact(scratch_risk, reflection_risk),
-    }
+    return analyze_record_surface_image(content, content_type)
 
 
 def fallback_surface(content: bytes, media_type: str) -> dict[str, Any]:
@@ -1498,7 +2510,11 @@ def fallback_surface(content: bytes, media_type: str) -> dict[str, Any]:
 async def analyze_lp_recognition(file: Annotated[UploadFile, File()], media_type: Annotated[str, Form()] = "image"):
     content = await file.read()
     if media_type == "image":
-        result = surface_condition_from_image(content, file.content_type)
+        try:
+            result = surface_condition_from_image(content, file.content_type)
+        except Exception as exc:
+            logger.warning("lp-recognition opencv fallback: %s", exc)
+            result = None
         if result:
             return result
     return fallback_surface(content, "video" if media_type == "video" else "image")
@@ -1774,6 +2790,7 @@ def discogs_candidate(result: dict[str, Any], catalog_number: str) -> dict[str, 
     else:
         artist, title = "Unknown artist", title_text
     labels = result.get("label") if isinstance(result.get("label"), list) else []
+    formats = result.get("format") if isinstance(result.get("format"), list) else []
     return {
         "id": f"discogs-{release_id or uuid4().hex[:8]}",
         "releaseId": int(release_id or 0),
@@ -1783,7 +2800,93 @@ def discogs_candidate(result: dict[str, Any], catalog_number: str) -> dict[str, 
         "label": str(labels[0]) if labels else "Unknown label",
         "catalogNumber": str(result.get("catno") or catalog_number),
         "country": str(result.get("country") or "Unknown"),
+        "coverImageUrl": str(result.get("cover_image") or result.get("thumb") or ""),
+        "pressing": " · ".join(str(value) for value in formats),
         "confidence": 88,
+    }
+
+
+async def discogs_result_with_cover(client: httpx.AsyncClient, result: dict[str, Any]) -> dict[str, Any]:
+    if result.get("cover_image") or result.get("thumb") or not result.get("id"):
+        return result
+    try:
+        response = await client.get(f"https://api.discogs.com/releases/{result['id']}")
+        response.raise_for_status()
+        images = response.json().get("images", [])
+        if images:
+            enriched = dict(result)
+            enriched["cover_image"] = images[0].get("uri") or images[0].get("uri150") or ""
+            return enriched
+    except httpx.HTTPError as exc:
+        logger.info("Discogs cover lookup failed for %s: %s", result.get("id"), exc)
+    return result
+
+
+@router.get("/discogs/albums")
+async def search_discogs_albums(
+    album_title: str | None = None,
+    artist: str | None = None,
+    page: int = 1,
+    per_page: int = 10,
+):
+    title_query = (album_title or "").strip()
+    artist_query = (artist or "").strip()
+    if not title_query and not artist_query:
+        return {
+            "source": "discogs",
+            "albums": [],
+            "pagination": {"page": 1, "perPage": min(max(per_page, 1), 20), "pages": 0, "total": 0},
+        }
+    try:
+        return await discogs_catalog_service.search_albums(
+            title_query,
+            artist_query,
+            max(page, 1),
+            min(max(per_page, 1), 20),
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("Discogs album lookup failed: %s", exc)
+        raise HTTPException(status_code=502, detail="Discogs 앨범 검색에 실패했습니다. 잠시 후 다시 시도해 주세요.") from exc
+
+
+@router.get("/discogs/masters/{master_id}/representative-versions")
+async def get_discogs_representative_versions(master_id: int, refresh: bool = False):
+    try:
+        catalog = await discogs_catalog_service.get_version_catalog(master_id, refresh=refresh)
+    except httpx.HTTPError as exc:
+        logger.warning("Discogs master version lookup failed for %s: %s", master_id, exc)
+        raise HTTPException(status_code=502, detail="Discogs LP 판본을 불러오지 못했습니다. 다시 시도해 주세요.") from exc
+    total = len(catalog.representative) + len(catalog.remaining)
+    return {
+        "masterId": master_id,
+        "representative": catalog.representative,
+        "total": total,
+        "remainingCount": len(catalog.remaining),
+        "partial": catalog.partial,
+    }
+
+
+@router.get("/discogs/masters/{master_id}/versions")
+async def get_discogs_master_versions(master_id: int, offset: int = 0, limit: int = 20):
+    try:
+        catalog = await discogs_catalog_service.get_version_catalog(master_id)
+    except httpx.HTTPError as exc:
+        logger.warning("Discogs master version page failed for %s: %s", master_id, exc)
+        raise HTTPException(status_code=502, detail="Discogs LP 판본을 불러오지 못했습니다. 다시 시도해 주세요.") from exc
+    safe_offset = max(offset, 0)
+    safe_limit = min(max(limit, 1), 20)
+    versions = catalog.remaining[safe_offset:safe_offset + safe_limit]
+    next_offset = safe_offset + len(versions)
+    return {
+        "masterId": master_id,
+        "versions": versions,
+        "offset": safe_offset,
+        "limit": safe_limit,
+        "total": len(catalog.representative) + len(catalog.remaining),
+        "remainingCount": max(0, len(catalog.remaining) - next_offset),
+        "nextOffset": next_offset,
+        "hasMore": next_offset < len(catalog.remaining),
+        "partial": catalog.partial,
     }
 
 
@@ -1798,167 +2901,16 @@ async def search_discogs(catalog_number: str | None = None, album_title: str | N
             params["catno"] = catalog_number
         else:
             params["q"] = " ".join(part for part in [artist, album_title] if part)
-        async with httpx.AsyncClient(timeout=8) as client:
+        async with httpx.AsyncClient(timeout=8, headers={"User-Agent": "VinylCheck/0.1 +https://vinyl-check.local"}) as client:
             response = await client.get("https://api.discogs.com/database/search", params=params)
             response.raise_for_status()
             payload = response.json()
-        candidates = [discogs_candidate(item, query) for item in payload.get("results", [])[:5]]
+            results = await asyncio.gather(*(discogs_result_with_cover(client, item) for item in payload.get("results", [])[:5]))
+        candidates = [discogs_candidate(item, query) for item in results]
         return {"source": "discogs", "candidates": candidates}
     except Exception as exc:
         logger.warning("Discogs lookup failed: %s", exc)
         return {"source": "mock", "candidates": []}
-
-
-def normalize_address_text(value: Any) -> str:
-    return " ".join(str(value or "").split())
-
-
-def address_candidate_id(address: str, place_name: str, longitude: str, latitude: str) -> str:
-    return stable_id("addr", "|".join([address, place_name, longitude, latitude]))
-
-
-def read_env_value(key: str) -> str:
-    value = os.getenv(key, "").strip().strip('"').strip("'")
-    if value:
-        return value
-    if not os.path.exists(ENV_PATH):
-        return ""
-    try:
-        with open(ENV_PATH, "r", encoding="utf-8") as file:
-            for raw_line in file:
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                existing_key, existing_value = line.split("=", 1)
-                if existing_key.strip() == key:
-                    return existing_value.strip().strip('"').strip("'")
-    except OSError:
-        return ""
-    return ""
-
-
-def kakao_api_key() -> str:
-    for key in ("KAKAO_REST_API_KEY", "KAKAO_MAP_API_KEY", "KAKAO_API_KEY"):
-        value = read_env_value(key)
-        if value:
-            return value
-    return ""
-
-
-def write_env_value(key: str, value: str) -> None:
-    lines: list[str] = []
-    found = False
-    if os.path.exists(ENV_PATH):
-        try:
-            with open(ENV_PATH, "r", encoding="utf-8") as file:
-                lines = file.readlines()
-        except OSError:
-            lines = []
-
-    next_lines: list[str] = []
-    for raw_line in lines:
-        line = raw_line.rstrip("\n")
-        if line.strip().startswith("#") or "=" not in line:
-            next_lines.append(raw_line)
-            continue
-        existing_key, _ = line.split("=", 1)
-        if existing_key.strip() == key:
-            next_lines.append(f"{key}={value}\n")
-            found = True
-        else:
-            next_lines.append(raw_line)
-    if not found:
-        if next_lines and not next_lines[-1].endswith("\n"):
-            next_lines[-1] = f"{next_lines[-1]}\n"
-        next_lines.append(f"{key}={value}\n")
-
-    with open(ENV_PATH, "w", encoding="utf-8") as file:
-        file.writelines(next_lines)
-    os.environ[key] = value
-
-
-@router.get("/address/api-key")
-async def address_api_key_status():
-    return {"hasKey": bool(kakao_api_key()), "provider": "kakao"}
-
-
-@router.put("/address/api-key")
-async def save_address_api_key(payload: AddressApiKeyUpsert):
-    api_key = payload.apiKey.strip()
-    if len(api_key) < 8:
-        raise HTTPException(status_code=400, detail="카카오 REST API 키를 입력해 주세요.")
-    write_env_value("KAKAO_REST_API_KEY", api_key)
-    return {"ok": True, "hasKey": True, "provider": "kakao", "message": "카카오 지도 API 키가 저장되었습니다."}
-
-
-def kakao_local_candidate(item: dict[str, Any]) -> dict[str, str]:
-    place_name = normalize_address_text(item.get("place_name"))
-    road_address = normalize_address_text(item.get("road_address_name"))
-    jibun_address = normalize_address_text(item.get("address_name"))
-    address = road_address or jibun_address or place_name
-    longitude = normalize_address_text(item.get("x"))
-    latitude = normalize_address_text(item.get("y"))
-    category = normalize_address_text(item.get("category_name"))
-    return {
-        "id": address_candidate_id(address, place_name, longitude, latitude),
-        "roadAddress": road_address,
-        "jibunAddress": jibun_address,
-        "zipCode": "",
-        "sido": "",
-        "sigungu": "",
-        "detail": place_name or category,
-        "placeName": place_name,
-        "address": address,
-        "longitude": longitude,
-        "latitude": latitude,
-        "category": category,
-    }
-
-
-@router.get("/address/search")
-async def search_address(keyword: str, count: int = 8, page: int = 1):
-    query = keyword.strip()
-    safe_count = max(1, min(count, 20))
-    safe_page = max(1, page)
-    if len(query) < 2:
-        return {"source": "kakao", "candidates": [], "message": "검색어를 2글자 이상 입력해 주세요."}
-
-    key = kakao_api_key()
-    if not key:
-        return {
-            "source": "kakao",
-            "candidates": [],
-            "totalCount": 0,
-            "message": "KAKAO_REST_API_KEY가 없어 카카오 지도 검색을 사용할 수 없습니다.",
-        }
-
-    try:
-        params = {
-            "query": query,
-            "page": str(safe_page),
-            "size": str(min(safe_count, 15)),
-        }
-        headers = {"Authorization": f"KakaoAK {key}"}
-        async with httpx.AsyncClient(timeout=7) as client:
-            response = await client.get("https://dapi.kakao.com/v2/local/search/keyword.json", params=params, headers=headers)
-            response.raise_for_status()
-            payload = response.json()
-        candidates = [kakao_local_candidate(item) for item in payload.get("documents", [])]
-        meta = payload.get("meta", {}) if isinstance(payload, dict) else {}
-        return {
-            "source": "kakao",
-            "candidates": candidates,
-            "totalCount": int(meta.get("total_count") or len(candidates)),
-            "message": "카카오 지도 검색 결과입니다.",
-        }
-    except Exception as exc:
-        logger.warning("Kakao local lookup failed: %s", exc)
-        return {
-            "source": "kakao",
-            "candidates": [],
-            "totalCount": 0,
-            "message": "카카오 지도 검색에 실패했습니다. API 키와 네트워크 상태를 확인해 주세요.",
-        }
 
 
 def discogs_headers() -> dict[str, str]:

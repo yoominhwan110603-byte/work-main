@@ -106,7 +106,6 @@
           <div><p class="text-gray-500">레이블</p><p>{{ report.pressing.label }}</p></div>
           <div><p class="text-gray-500">발매국</p><p>{{ report.pressing.releaseCountry }}</p></div>
           <div><p class="text-gray-500">발매연도</p><p>{{ report.pressing.releaseYear || '미상' }}</p></div>
-          <div class="col-span-2"><p class="text-gray-500">매트릭스 번호</p><p>{{ report.pressing.matrixNumber || report.matrixNumber || '미입력' }}</p></div>
           <div class="col-span-2"><p class="text-gray-500">판본 추정</p><p>{{ report.pressing.pressing }}</p></div>
         </div>
       </section>
@@ -224,7 +223,7 @@ const applyToSellForm = () => {
     String(draftForm.description || '').trim(),
     report.jacket ? `${jacketPrefix}: ${report.jacket.jacketGrade} (${report.jacket.jacketScore}점), 테두리 ${riskLabel(report.jacket.edgeWearRisk)}, 모서리 ${riskLabel(report.jacket.cornerWearRisk)}.` : '',
     report.audio ? `${audioPrefix}: ${report.audio.audioGrade} (${report.audio.audioScore}점), 클릭/팝 후보 ${report.audio.clickCount ?? 0}개.` : '',
-    `Vinyl-Check 감정: ${report.pressing.pressing}, ${report.pressing.releaseCountry} ${report.pressing.releaseYear}, 매트릭스 ${report.pressing.matrixNumber || report.matrixNumber || '미입력'}, 표면 ${recognition.value.surfaceScore || recognition.value.confidence}점, 스크래치 후보 ${recognition.value.scratchCount}개, 재생 영향 ${recognition.value.playbackImpact}.`,
+    `Vinyl-Check 감정: ${report.pressing.pressing}, ${report.pressing.releaseCountry} ${report.pressing.releaseYear}, 표면 ${recognition.value.surfaceScore || recognition.value.confidence}점, 스크래치 후보 ${recognition.value.scratchCount}개, 재생 영향 ${recognition.value.playbackImpact}.`,
   ].filter(Boolean).join('\n\n');
 
   store.saveDraft({
@@ -241,7 +240,6 @@ const applyToSellForm = () => {
       title: report.selectedCandidate.title,
       artist: report.selectedCandidate.artist,
       catalogNumber: report.pressing.catalogNumber,
-      matrixNumber: report.pressing.matrixNumber || report.matrixNumber || '',
       price: String(recommendStarterPrice()),
       description: nextDescription,
       tags: String(draftForm.tags || '#VinylCheck #LP감정'),

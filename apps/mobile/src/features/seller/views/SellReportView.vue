@@ -88,6 +88,44 @@
         </div>
       </section>
 
+      <section class="bg-white rounded-lg border p-4 space-y-3" v-if="marketEstimate || marketAdviceError">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <p class="text-sm text-gray-500">FC온라인식 시세</p>
+            <h2 class="text-xl">가격 제한과 판매 조언</h2>
+          </div>
+          <span v-if="marketAdviceLoading" class="text-xs text-blue-600">갱신 중</span>
+        </div>
+        <div v-if="marketEstimate" class="grid grid-cols-2 gap-3">
+          <div class="rounded-lg bg-blue-50 p-3">
+            <p class="text-xs text-blue-700">기준가</p>
+            <p class="mt-1">{{ formatWon(marketEstimate.basePrice) }}</p>
+          </div>
+          <div class="rounded-lg bg-gray-50 p-3">
+            <p class="text-xs text-gray-500">가격 범위</p>
+            <p class="mt-1">{{ formatWon(marketEstimate.minPrice) }} ~ {{ formatWon(marketEstimate.maxPrice) }}</p>
+          </div>
+          <div class="rounded-lg bg-gray-50 p-3">
+            <p class="text-xs text-gray-500">추천 판매가</p>
+            <p class="mt-1">{{ formatWon(marketEstimate.recommendedPrice) }}</p>
+          </div>
+          <div class="rounded-lg bg-emerald-50 p-3">
+            <p class="text-xs text-emerald-700">즉시 판매가</p>
+            <p class="mt-1">{{ formatWon(marketEstimate.instantSalePrice) }}</p>
+          </div>
+          <div class="rounded-lg bg-indigo-50 p-3">
+            <p class="text-xs text-indigo-700">위시 대기</p>
+            <p class="mt-1">{{ marketEstimate.metrics.wishlistCount || 0 }}명</p>
+          </div>
+        </div>
+        <div v-if="marketAdvice?.advice.length" class="space-y-2">
+          <p v-for="item in marketAdvice.advice" :key="item.message" class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            {{ item.message }}
+          </p>
+        </div>
+        <p v-if="marketAdviceError" class="rounded-lg bg-red-50 p-3 text-xs text-red-800">{{ marketAdviceError }}</p>
+      </section>
+
       <section class="bg-white rounded-lg border p-4 space-y-3">
         <div class="flex items-center justify-between gap-3">
           <div class="flex items-center gap-2 min-w-0">
@@ -260,9 +298,9 @@ import {
   Sparkles,
 } from 'lucide-vue-next';
 import VinylCover from '@/shared/components/VinylCover.vue';
-import { albums, type Album } from '@/shared/models/market';
+import { albums, type Album, type MarketAdviceResponse } from '@/shared/models/market';
 import { useAppStore } from '@/shared/stores/appStore';
-import { fetchPriceRecommendation, type PriceRecommendation } from '@/features/seller/services/pricing';
+import { fetchMarketAdvice, fetchPriceRecommendation, type PriceRecommendation } from '@/features/seller/services/pricing';
 
 const LAST_REPORT_LISTING_ID_KEY = 'vinyl-check-last-sell-report-listing-id';
 
@@ -311,6 +349,9 @@ const loading = ref(false);
 const pricingLoading = ref(false);
 const pricingError = ref('');
 const priceRecommendation = ref<PriceRecommendation | null>(null);
+const marketAdvice = ref<MarketAdviceResponse | null>(null);
+const marketAdviceLoading = ref(false);
+const marketAdviceError = ref('');
 const savedListingId = ref(localStorage.getItem(LAST_REPORT_LISTING_ID_KEY) || '');
 
 const routeListingId = computed(() => String(route.query.id || route.query.listingId || savedListingId.value || ''));
@@ -322,6 +363,7 @@ const listing = computed(() => {
     || ownListings.value.slice().sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0]
     || null;
 });
+const marketEstimate = computed(() => marketAdvice.value?.estimate || listing.value?.market || null);
 
 const analysis = computed<AnalysisReport>(() => (listing.value?.analysisReport || {}) as AnalysisReport);
 const audio = computed(() => analysis.value.audio || {
@@ -373,6 +415,7 @@ const localMarketRange = computed(() => {
 });
 
 const marketAverage = computed(() => {
+  if (marketEstimate.value?.basePrice) return marketEstimate.value.basePrice;
   const external = priceRecommendation.value;
   if (external?.source === 'discogs') {
     return roundPrice(external.discogs?.suggestedPrice || external.recommended_price || external.discogs?.marketplaceLow || localMarketAverage.value);
@@ -381,6 +424,7 @@ const marketAverage = computed(() => {
 });
 
 const marketRange = computed(() => {
+  if (marketEstimate.value) return { min: marketEstimate.value.minPrice, max: marketEstimate.value.maxPrice };
   const external = priceRecommendation.value?.price_range;
   if (external?.min && external?.max) return external;
   return localMarketRange.value;
@@ -400,6 +444,7 @@ const localRecommendedPrice = computed(() => {
 });
 
 const recommendedPrice = computed(() => {
+  if (marketEstimate.value?.recommendedPrice) return marketEstimate.value.recommendedPrice;
   return priceRecommendation.value?.recommended_price || localRecommendedPrice.value;
 });
 
@@ -545,7 +590,7 @@ const actionTips = computed(() => {
   if (!jacket.value.jacketScore && !jacket.value.jacketGrade) tips.push('자켓 사진을 다시 등록하면 테두리/모서리 상태가 리포트에 반영됩니다.');
   if (!surface.value.surfaceScore && !listing.value.recordImageDataUrl && !listing.value.recordVideoDataUrl) tips.push('판면 이미지나 반사 영상이 있으면 스크래치 후보와 재생 영향 설명이 강화됩니다.');
   if (!listing.value.catalogNumber) tips.push('카탈로그 번호를 입력하면 같은 판본 기준으로 더 정확한 시세 비교가 가능합니다.');
-  if ((listing.value.description || '').trim().length < 80) tips.push('설명에 매트릭스 번호, 재생 확인 구간, 자켓 특이사항을 한 줄씩 보강해 주세요.');
+  if ((listing.value.description || '').trim().length < 80) tips.push('설명에 재생 확인 구간과 자켓 특이사항을 한 줄씩 보강해 주세요.');
   return tips.length ? tips : ['현재 등록 품질이 좋습니다. 상품 상세에서 노출 상태를 확인해 보세요.'];
 });
 
@@ -645,6 +690,19 @@ async function loadDiscogsPricing() {
   }
 }
 
+async function loadMarketAdvice() {
+  if (!listing.value || marketAdviceLoading.value) return;
+  marketAdviceLoading.value = true;
+  marketAdviceError.value = '';
+  try {
+    marketAdvice.value = await fetchMarketAdvice(listing.value.id);
+  } catch (error) {
+    marketAdviceError.value = error instanceof Error ? error.message : '시세 조언을 불러오지 못했습니다.';
+  } finally {
+    marketAdviceLoading.value = false;
+  }
+}
+
 onMounted(async () => {
   const id = routeListingId.value;
   if (id) {
@@ -660,5 +718,6 @@ onMounted(async () => {
     loading.value = false;
   }
   await loadDiscogsPricing();
+  await loadMarketAdvice();
 });
 </script>

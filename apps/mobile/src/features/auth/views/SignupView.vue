@@ -146,13 +146,10 @@ const sendEmailCode = async () => {
   try {
     const result = await store.requestEmailVerification(form.email);
     emailCodeSent.value = true;
-    if (result.devVerificationCode) emailCode.value = result.devVerificationCode;
     await nextTick();
     emailCodeInput.value?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     emailCodeInput.value?.focus();
-    setMessage(result.devVerificationCode
-      ? `${result.message || '인증번호를 발송했습니다.'} 개발용 인증번호: ${result.devVerificationCode}`
-      : result.message || '인증번호를 이메일로 발송했습니다.', 'info');
+    setMessage(result.message || '인증번호를 이메일로 발송했습니다.', 'info');
   } catch (error) {
     setMessage(error instanceof Error ? error.message : '인증번호 발송에 실패했습니다.');
   } finally {

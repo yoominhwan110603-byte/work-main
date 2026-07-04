@@ -19,13 +19,6 @@
           </div>
         </div>
       </section>
-
-      <section class="space-y-3">
-        <label class="block text-base" for="matrix-number">매트릭스 번호</label>
-        <input id="matrix-number" v-model="matrixNumber" type="text" class="w-full px-4 py-3 border rounded-lg" placeholder="XLP47324-1A, YEX 749-2" />
-        <p class="text-xs text-gray-500">런아웃/데드왁스 번호를 입력하면 판본 근거가 더 선명해집니다.</p>
-      </section>
-
       <section class="space-y-3">
         <h2 class="text-base">대표 사진</h2>
         <div v-if="imagePreview" class="relative aspect-square overflow-hidden rounded-lg bg-gray-100">
@@ -208,7 +201,6 @@ const draft = store.readDraft();
 const draftForm = draft?.formData && typeof draft.formData === 'object' ? draft.formData as Record<string, unknown> : {};
 const draftImages = Array.isArray(draft?.images) ? draft.images as string[] : [];
 const catalogNumber = ref(String(draftForm.catalogNumber || ''));
-const matrixNumber = ref(String(draftForm.matrixNumber || ''));
 const imagePreview = ref(draftImages[0] || '');
 const recordPreview = ref(draftImages[1] || '');
 const recordVideoPreview = ref(String(draft?.recordVideoDataUrl || ''));
@@ -221,7 +213,7 @@ const isSearching = ref(false);
 
 const selectedCandidate = computed(() => candidates.value.find(candidate => candidate.id === selectedCandidateId.value) || null);
 const fallbackCandidate = computed(() => selectedCandidate.value || findAlbumCandidates('')[0]);
-const pressing = computed(() => createPressingInfo(fallbackCandidate.value, matrixNumber.value));
+const pressing = computed(() => createPressingInfo(fallbackCandidate.value));
 const recordMediaPreview = computed(() => recordPreview.value || recordVideoPreview.value);
 const scratchRegions = computed(() => recognition.value.scratchRegions || []);
 const scratchDetails = computed(() => recognition.value.scratchDetails || {});
@@ -308,7 +300,6 @@ const startAnalysis = () => {
     recordImageDataUrl: recordPreview.value,
     recordVideoDataUrl: recordVideoPreview.value,
     catalogNumber: catalogNumber.value,
-    matrixNumber: matrixNumber.value,
     recognition: recognition.value,
     selectedCandidate: selectedCandidate.value,
     pressing: pressing.value,
