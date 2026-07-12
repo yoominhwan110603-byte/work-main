@@ -1544,6 +1544,7 @@ def compact_buy_order(order: dict[str, Any], users: dict[str, Any] | None = None
         "id": str(order.get("id") or ""),
         "buyerId": str(order.get("buyer_id") or order.get("buyerId") or ""),
         "buyerAlias": buy_order_buyer_alias(order, users),
+        "chatId": str(order.get("chat_id") or order.get("chatId") or ""),
         "listingId": order.get("listing_id") or order.get("listingId"),
         "marketKey": str(order.get("market_key") or order.get("marketKey") or ""),
         "maxPrice": int(order.get("max_price") or order.get("maxPrice") or 0),
@@ -1672,12 +1673,26 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
         raise HTTPException(status_code=404, detail="조건에 맞는 구매 대기가 없습니다.")
     order = matches[0]
     sale_price = int(order.get("max_price") or order.get("maxPrice") or 0)
+    buyer_id = str(order.get("buyer_id") or order.get("buyerId") or "")
+    users = read_json(USERS_PATH, {})
+    buyer = users.get(buyer_id, {}) if isinstance(users, dict) else {}
+    seller = users.get(seller_id, {}) if isinstance(users, dict) else {}
+    buyer_name = str(order.get("buyer_name") or order.get("buyerName") or buyer.get("username") or buyer.get("name") or buyer_id or "구매자")
+    seller_name = str(
+        listing.get("seller_name")
+        or listing.get("sellerName")
+        or seller.get("username")
+        or seller.get("name")
+        or seller_id
+        or "판매자"
+    )
+    chat_id = make_one_to_one_chat_id(listing_id, buyer_id, seller_id)
     transaction_id = f"tx-{uuid4().hex[:10]}"
     now = now_iso()
 
     listing["status"] = "reserved"
     listing["reserved_at"] = now
-    listing["buyer_id"] = order.get("buyer_id") or order.get("buyerId")
+    listing["buyer_id"] = buyer_id
     listing["instant_sale_price"] = sale_price
     listing["sold_price"] = sale_price
     recalculate_listing_market(listing, listings)
@@ -1688,6 +1703,8 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
             stored_order["matched_listing_id"] = listing_id
             stored_order["matched_at"] = now
             stored_order["transaction_id"] = transaction_id
+            stored_order["chat_id"] = chat_id
+            stored_order["chatId"] = chat_id
             stored_order["updated_at"] = now
             order = stored_order
             break
@@ -1696,10 +1713,12 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
     transaction = {
         "id": transaction_id,
         "type": "instant_sale",
+        "chat_id": chat_id,
+        "chatId": chat_id,
         "listing_id": listing_id,
         "listingId": listing_id,
-        "buyer_id": order.get("buyer_id") or order.get("buyerId"),
-        "buyerId": order.get("buyer_id") or order.get("buyerId"),
+        "buyer_id": buyer_id,
+        "buyerId": buyer_id,
         "seller_id": seller_id,
         "sellerId": seller_id,
         "price": sale_price,
@@ -1723,10 +1742,21 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
     write_json(BUY_ORDERS_PATH, buy_orders)
     write_json(TRANSACTIONS_PATH, transactions)
     write_json(MARKET_PRICE_HISTORY_PATH, history)
+    message = await save_chat_message(chat_id, ChatMessageCreate(
+        sender_id=seller_id,
+        sender_name=seller_name,
+        recipient_id=buyer_id,
+        recipient_name=buyer_name,
+        listing_id=listing_id,
+        content=f"구매 대기를 승인했습니다. {sale_price:,}원 거래를 채팅에서 이어가세요.",
+        message_type="offer",
+    ))
+    await chat_manager.broadcast(chat_id, {"type": "message", "chatId": chat_id, "message": message})
     return {
         "status": "ok",
+        "chatId": chat_id,
         "listing": listing_to_album(listing),
-        "buyOrder": compact_buy_order(order, read_json(USERS_PATH, {})),
+        "buyOrder": compact_buy_order(order, users),
         "transaction": transaction,
         "priceHistory": history_item,
     }

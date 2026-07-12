@@ -172,7 +172,6 @@ const updateStatus = async (offerId: string, status: 'accepted' | 'rejected') =>
     if (payload.offer?.chatId) offer.chatId = payload.offer.chatId;
     if (status === 'accepted') {
       saveActiveTrade({ albumId: offer.album.id, buyerName: offer.buyerName, offerPrice: offer.offerPrice, acceptedAt: new Date().toISOString(), status: 'selling' });
-      alert('가격 제안을 수락했습니다.');
       openOfferChat(offer);
     }
   } catch (error) {

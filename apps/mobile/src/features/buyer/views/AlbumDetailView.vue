@@ -93,10 +93,21 @@
               <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">위시 대기</p><p>{{ wishlistCount }}명</p></div>
+              <div v-if="isOwnListing" class="rounded bg-white p-2"><p class="text-gray-500">구매 대기</p><p>{{ buyOrderCount }}명</p></div>
+              <div v-if="isOwnListing && instantSalePrice" class="rounded bg-white p-2"><p class="text-gray-500">승인 가능가</p><p>{{ formatWon(instantSalePrice) }}</p></div>
             </div>
             <p v-if="isOwnListing" class="rounded-lg bg-white p-2 text-xs text-gray-700">
               현재 {{ wishlistCount }}명이 이 LP를 위시리스트로 기다리고 있습니다.
             </p>
+            <button
+              v-if="instantSaleAvailable"
+              type="button"
+              class="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white disabled:bg-gray-300"
+              :disabled="instantSelling"
+              @click="approveBuyOrder"
+            >
+              {{ instantSelling ? '구매대기 승인 중' : `구매대기 승인하고 채팅으로 이동${instantSalePrice ? ` · ${formatWon(instantSalePrice)}` : ''}` }}
+            </button>
             <div v-if="isOwnListing && marketAdvice?.advice.length" class="space-y-2">
               <p v-for="item in marketAdvice.advice" :key="item.message" class="rounded-lg bg-white p-2 text-xs text-gray-700">
                 {{ item.message }}
@@ -191,6 +202,14 @@
       <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <ClipboardList :size="18" />제안
       </button>
+      <button
+        v-if="instantSaleAvailable"
+        class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm disabled:bg-gray-300"
+        :disabled="instantSelling"
+        @click="approveBuyOrder"
+      >
+        <ClipboardList :size="18" />{{ instantSelling ? '구매대기 승인 중' : '구매대기 승인' }}
+      </button>
       <button class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <MessageCircle :size="18" />채팅
       </button>
@@ -211,13 +230,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, BadgeCheck, ClipboardList, Eye, Heart, MapPin, MessageCircle, Pencil, Play, Volume2 } from 'lucide-vue-next';
-import { getActiveTrade } from '@/features/transaction/services/tradeState';
+import { getActiveTrade, saveActiveTrade } from '@/features/transaction/services/tradeState';
 import { useAppStore } from '@/shared/stores/appStore';
 import { findAlbumById } from '@/features/buyer/services/albumLookup';
 import { makeOneToOneChatId } from '@/features/transaction/services/chatClient';
 import { goBackOr } from '@/shared/services/navigation';
 import { resolveApiUrl } from '@/shared/services/api';
-import { fetchMarketAdvice, recordListingView } from '@/shared/services/market';
+import { fetchMarketAdvice, instantSellListing, recordListingView } from '@/shared/services/market';
 import type { MarketAdviceResponse } from '@/shared/models/market';
 import VinylCover from '@/shared/components/VinylCover.vue';
 
@@ -228,6 +247,7 @@ const album = computed(() => findAlbumById(store, route.params.id));
 const currentImageIndex = ref(0);
 const samplePlaying = ref<'good' | 'noisy' | null>(null);
 const isHidingListing = ref(false);
+const instantSelling = ref(false);
 const marketAdvice = ref<MarketAdviceResponse | null>(null);
 const marketLoading = ref(false);
 const wishlistSaving = ref(false);
@@ -261,6 +281,9 @@ const marketEstimate = computed(() => marketAdvice.value?.estimate || album.valu
 const formatWon = (value?: number | null) => typeof value === 'number' && value > 0 ? `${value.toLocaleString()}원` : '-';
 const formatSampleRecordedDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
 const wishlistCount = computed(() => album.value?.wishlistCount ?? marketEstimate.value?.metrics?.wishlistCount ?? 0);
+const buyOrderCount = computed(() => marketEstimate.value?.metrics?.buyOrderCount ?? album.value?.buyOrderCount ?? 0);
+const instantSalePrice = computed(() => marketEstimate.value?.instantSalePrice ?? album.value?.instantSalePrice ?? album.value?.market?.instantSalePrice ?? 0);
+const instantSaleAvailable = computed(() => isOwnListing.value && !isCompletedTrade.value && Boolean(marketEstimate.value?.instantSaleAvailable || instantSalePrice.value > 0));
 const isWishlisted = computed(() => Boolean(album.value && store.isFavoriteAlbum(album.value)));
 const analysisReport = computed(() => album.value?.analysisReport as Record<string, unknown> | undefined);
 const recordSurface = computed(() => analysisReport.value?.recordSurface as { surfaceScore?: number; scratchCount?: number } | undefined);
@@ -279,6 +302,39 @@ const openSellerChat = () => {
       recipientName: album.value.seller.name,
     },
   });
+};
+const approveBuyOrder = async () => {
+  if (!album.value || instantSelling.value) return;
+  instantSelling.value = true;
+  try {
+    const result = await instantSellListing(album.value.id, store.user.id);
+    if (result.listing) {
+      store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing!.id)];
+    }
+    const buyerId = result.buyOrder?.buyerId || result.transaction?.buyerId || '';
+    const buyerName = result.buyOrder?.buyerName || result.buyOrder?.buyerAlias || '구매자';
+    const tradePrice = result.transaction?.price || result.buyOrder?.maxPrice || instantSalePrice.value || album.value.price;
+    saveActiveTrade({
+      albumId: album.value.id,
+      buyerName,
+      offerPrice: tradePrice,
+      acceptedAt: new Date().toISOString(),
+      status: 'selling',
+    });
+    const chatId = result.chatId || result.transaction?.chatId || makeOneToOneChatId(album.value.id, buyerId, store.user.id);
+    router.push({
+      path: `/transaction/chat/${chatId}`,
+      query: {
+        listingId: album.value.id,
+        recipientId: buyerId,
+        recipientName: buyerName,
+      },
+    });
+  } catch (error) {
+    alert(error instanceof Error ? error.message : '구매대기 승인에 실패했습니다.');
+  } finally {
+    instantSelling.value = false;
+  }
 };
 const hideCurrentListing = async () => {
   if (!album.value || isHidingListing.value) return;

@@ -76,7 +76,6 @@
         </button>
       </div>
 
-      <p class="collection-page__hint">꽂혀 있는 LP 자켓을 왼쪽으로 밀면 해당 앨범만 책장에서 빠져나옵니다. 꺼낸 앨범을 누르면 상세로 이동합니다.</p>
     </header>
 
     <main class="px-4 py-4 pb-24">
@@ -98,35 +97,27 @@
         </button>
       </section>
 
-      <section v-else class="space-y-5">
-        <div class="mb-3 flex items-end justify-between gap-3">
-          <div>
-            <h2 class="text-lg font-semibold">{{ shelfTitle }}</h2>
-            <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">{{ sortLabel }}</p>
-          </div>
-          <span class="shrink-0 text-sm text-gray-500 dark:text-neutral-400">{{ filteredCollections.length }}개</span>
-        </div>
-
+      <section v-else>
         <div class="shelf-stack" role="list" aria-label="레코드장 컬렉션">
           <div
             v-for="row in shelfDisplayRows"
             :key="row.index"
             :class="['shelf-row', { 'has-pulled': row.pulled }]"
             role="listitem"
+            @pointerdown="beginRackPullGesture($event, row)"
+            @pointermove="moveRackPullGesture($event)"
+            @pointerup="finishRackPullGesture($event)"
+            @pointercancel="cancelPullGesture"
+            @mousedown="beginRackMousePullGesture($event, row)"
+            @mousemove="moveRackMousePullGesture($event)"
+            @mouseup="finishRackMousePullGesture($event)"
+            @touchstart.passive="beginRackTouchPullGesture($event, row)"
+            @touchmove.passive="moveRackTouchPullGesture($event)"
+            @touchend="finishRackTouchPullGesture($event)"
           >
             <div
               class="spine-rack"
               role="list"
-              @pointerdown="beginRackPullGesture($event, row)"
-              @pointermove="moveRackPullGesture($event)"
-              @pointerup="finishRackPullGesture($event)"
-              @pointercancel="cancelPullGesture"
-              @mousedown="beginRackMousePullGesture($event, row)"
-              @mousemove="moveRackMousePullGesture($event)"
-              @mouseup="finishRackMousePullGesture($event)"
-              @touchstart.passive="beginRackTouchPullGesture($event, row)"
-              @touchmove.passive="moveRackTouchPullGesture($event)"
-              @touchend="finishRackTouchPullGesture($event)"
             >
               <button
                 v-for="(collection, itemIndex) in row.items"
@@ -142,7 +133,6 @@
                 <span class="slot-depth" aria-hidden="true"></span>
                 <span class="record-disc-edge" aria-hidden="true"></span>
                 <span class="jacket-edge" aria-hidden="true"></span>
-                <span class="spine-shine" aria-hidden="true"></span>
                 <span class="spine-badges" aria-hidden="true">
                   <span v-if="collection.isRare">희</span>
                   <span v-if="collection.isFirstPress">초</span>
@@ -155,9 +145,19 @@
                   :key="row.pulled.id"
                   type="button"
                   class="pulled-jacket"
-                  :style="pulledJacketStyle(row.pulledIndex)"
+                  :style="pulledJacketStyle()"
                   :aria-label="`${row.pulled.title} 상세 보기`"
-                  @click="router.push(collectionRoute(row.pulled.id))"
+                  @pointerdown.stop="beginPulledJacketGesture($event, row)"
+                  @pointermove.stop="movePulledJacketGesture($event)"
+                  @pointerup.stop="finishPulledJacketGesture($event)"
+                  @pointercancel.stop="cancelPulledJacketGesture"
+                  @mousedown.stop="beginPulledJacketMouseGesture($event, row)"
+                  @mousemove.stop="movePulledJacketMouseGesture($event)"
+                  @mouseup.stop="finishPulledJacketMouseGesture($event)"
+                  @touchstart.passive.stop="beginPulledJacketTouchGesture($event, row)"
+                  @touchmove.passive.stop="movePulledJacketTouchGesture($event)"
+                  @touchend.stop="finishPulledJacketTouchGesture($event)"
+                  @click="openPulledCollection($event, row.pulled.id)"
                 >
                   <span class="pulled-disc" aria-hidden="true"></span>
                   <VinylCover :src="coverImageFor(row.pulled)" :alt="row.pulled.title" class="pulled-cover" />
@@ -200,6 +200,12 @@ type ShelfSwipeStart = {
   rowIndex: number;
   itemIndex: number;
   id: string;
+  x: number;
+  y: number;
+};
+type PulledJacketSwipeStart = {
+  rowIndex: number;
+  itemIndex: number;
   x: number;
   y: number;
 };
@@ -268,6 +274,8 @@ const coverImageFor = (collection: VinylCollection) => collection.coverImageData
 const collectionRoute = (id: string) => `/collection/${id}`;
 const pulledByRow = ref<Record<number, string>>({});
 const swipeStart = ref<ShelfSwipeStart | null>(null);
+const pulledJacketSwipeStart = ref<PulledJacketSwipeStart | null>(null);
+const suppressPulledJacketClick = ref(false);
 const shelfRows = computed<VinylCollection[][]>(() => {
   const rowSize = 7;
   return filteredCollections.value.reduce<VinylCollection[][]>((rows, collection, index) => {
@@ -300,11 +308,26 @@ const spineStyle = (collection: VinylCollection, rowIndex: number, itemIndex: nu
   '--cover': coverBackgroundFor(collection),
   zIndex: itemIndex + 1,
 });
-const pulledJacketStyle = (itemIndex: number) => ({
-  '--pull-left': `${shelfPullReserveGapRem + itemIndex * shelfSlotStepRem + shelfSlotWidthRem}rem`,
+const pulledJacketStyle = () => ({
+  '--pull-left': `${shelfPullReserveGapRem}rem`,
 });
 const pullCollection = (collection: VinylCollection, rowIndex: number) => {
   pulledByRow.value = { ...pulledByRow.value, [rowIndex]: collection.id };
+};
+const pullCollectionAt = (rowIndex: number, itemIndex: number) => {
+  const collection = shelfRows.value[rowIndex]?.[itemIndex];
+  if (!collection) return false;
+  pullCollection(collection, rowIndex);
+  return true;
+};
+const openPulledCollection = (event: MouseEvent, id: string) => {
+  if (suppressPulledJacketClick.value) {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressPulledJacketClick.value = false;
+    return;
+  }
+  router.push(collectionRoute(id));
 };
 const resolveRackCollection = (rack: HTMLElement, eventTarget: EventTarget | null, row: ShelfDisplayRow, clientX: number) => {
   const target = eventTarget instanceof HTMLElement ? eventTarget : null;
@@ -343,7 +366,7 @@ const pullIfSwipedLeft = (x: number, y: number) => {
 
   const deltaX = x - start.x;
   const deltaY = y - start.y;
-  const isLeftSwipe = deltaX < -16 && Math.abs(deltaX) > Math.abs(deltaY) * 0.75;
+  const isLeftSwipe = deltaX < -8 && Math.abs(deltaX) > Math.abs(deltaY) * 0.45;
   if (!isLeftSwipe) return false;
 
   const collection = shelfRows.value[start.rowIndex]?.[start.itemIndex];
@@ -411,17 +434,75 @@ const finishRackTouchPullGesture = (event: TouchEvent) => {
 const cancelPullGesture = () => {
   swipeStart.value = null;
 };
-const shelfTitle = computed(() => {
-  if (scope.value === 'mine') return '내 컬렉션';
-  if (scope.value === 'public') return '공개 컬렉션';
-  return '전체 컬렉션';
-});
-const sortLabel = computed(() => ({
-  recent: '최근 등록순',
-  artist: '아티스트순',
-  year: '발매 연도순',
-  title: '앨범명순',
-}[sort.value]));
+const startPulledJacketAt = (row: ShelfDisplayRow, x: number, y: number) => {
+  if (!row.pulled) return;
+  pulledJacketSwipeStart.value = { rowIndex: row.index, itemIndex: row.pulledIndex, x, y };
+};
+const switchPulledJacketIfSwiped = (x: number, y: number) => {
+  const start = pulledJacketSwipeStart.value;
+  if (!start) return false;
+
+  const deltaX = x - start.x;
+  const deltaY = y - start.y;
+  const isHorizontalSwipe = Math.abs(deltaX) > 8 && Math.abs(deltaX) > Math.abs(deltaY) * 0.45;
+  if (!isHorizontalSwipe) return false;
+
+  const rowItems = shelfRows.value[start.rowIndex] || [];
+  const nextIndex = deltaX < 0
+    ? Math.min(rowItems.length - 1, start.itemIndex + 1)
+    : Math.max(0, start.itemIndex - 1);
+
+  suppressPulledJacketClick.value = true;
+  pulledJacketSwipeStart.value = null;
+  if (nextIndex === start.itemIndex) return true;
+  return pullCollectionAt(start.rowIndex, nextIndex);
+};
+const beginPulledJacketGesture = (event: PointerEvent, row: ShelfDisplayRow) => {
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  startPulledJacketAt(row, event.clientX, event.clientY);
+};
+const movePulledJacketGesture = (event: PointerEvent) => {
+  if (switchPulledJacketIfSwiped(event.clientX, event.clientY)) {
+    const target = event.currentTarget as HTMLElement | null;
+    if (target?.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId);
+  }
+};
+const finishPulledJacketGesture = (event: PointerEvent) => {
+  const target = event.currentTarget as HTMLElement | null;
+  if (target?.hasPointerCapture?.(event.pointerId)) target.releasePointerCapture(event.pointerId);
+  switchPulledJacketIfSwiped(event.clientX, event.clientY);
+  pulledJacketSwipeStart.value = null;
+};
+const beginPulledJacketMouseGesture = (event: MouseEvent, row: ShelfDisplayRow) => {
+  if (event.button !== 0) return;
+  startPulledJacketAt(row, event.clientX, event.clientY);
+};
+const movePulledJacketMouseGesture = (event: MouseEvent) => {
+  switchPulledJacketIfSwiped(event.clientX, event.clientY);
+};
+const finishPulledJacketMouseGesture = (event: MouseEvent) => {
+  switchPulledJacketIfSwiped(event.clientX, event.clientY);
+  pulledJacketSwipeStart.value = null;
+};
+const beginPulledJacketTouchGesture = (event: TouchEvent, row: ShelfDisplayRow) => {
+  const touch = event.touches[0];
+  if (!touch) return;
+  startPulledJacketAt(row, touch.clientX, touch.clientY);
+};
+const movePulledJacketTouchGesture = (event: TouchEvent) => {
+  const touch = event.touches[0];
+  if (!touch) return;
+  switchPulledJacketIfSwiped(touch.clientX, touch.clientY);
+};
+const finishPulledJacketTouchGesture = (event: TouchEvent) => {
+  const touch = event.changedTouches[0];
+  if (touch) switchPulledJacketIfSwiped(touch.clientX, touch.clientY);
+  pulledJacketSwipeStart.value = null;
+};
+const cancelPulledJacketGesture = () => {
+  pulledJacketSwipeStart.value = null;
+};
 const chipClass = (active: boolean) => [
   'inline-flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 text-xs',
   active
@@ -449,23 +530,6 @@ const resetBrowse = () => {
     linear-gradient(180deg, #17100c 0%, #211712 62%, #14100e 100%);
 }
 
-.collection-page__hint {
-  margin-top: 0.75rem;
-  border-radius: 0.75rem;
-  border: 1px solid rgba(112, 67, 38, 0.18);
-  background: rgba(112, 67, 38, 0.08);
-  padding: 0.65rem 0.8rem;
-  color: #6f4326;
-  font-size: 0.75rem;
-  line-height: 1.45;
-}
-
-.dark .collection-page__hint {
-  border-color: rgba(238, 204, 165, 0.14);
-  background: rgba(238, 204, 165, 0.08);
-  color: #e6c29e;
-}
-
 .shelf-stack {
   display: grid;
   gap: 1rem;
@@ -486,6 +550,7 @@ const resetBrowse = () => {
     linear-gradient(180deg, rgba(255, 255, 255, 0.46), rgba(224, 202, 177, 0.5)),
     repeating-linear-gradient(90deg, rgba(126, 86, 45, 0.11) 0 1px, transparent 1px 18px);
   box-shadow: inset 0 12px 26px rgba(112, 74, 38, 0.13), 0 12px 22px rgba(93, 61, 34, 0.08);
+  touch-action: pan-y;
 }
 
 .shelf-row::before {
@@ -498,8 +563,8 @@ const resetBrowse = () => {
   content: "";
   border-radius: 0.55rem;
   background:
-    linear-gradient(180deg, rgba(66, 42, 24, 0.16), transparent 42%),
-    linear-gradient(90deg, rgba(255, 236, 208, 0.36), transparent 18%, transparent 82%, rgba(78, 45, 22, 0.14));
+    linear-gradient(180deg, rgba(66, 42, 24, 0.18), transparent 42%),
+    linear-gradient(90deg, rgba(104, 67, 37, 0.16), transparent 18%, transparent 82%, rgba(78, 45, 22, 0.16));
 }
 
 .shelf-row::after {
@@ -553,9 +618,10 @@ const resetBrowse = () => {
 .pulled-disc {
   position: absolute;
   top: 0.95rem;
-  right: -1.18rem;
+  right: auto;
+  left: -0.65rem;
   z-index: -1;
-  width: 6.25rem;
+  width: 5.7rem;
   aspect-ratio: 1;
   border-radius: 9999px;
   background:
@@ -630,7 +696,7 @@ const resetBrowse = () => {
 }
 
 .shelf-row.has-pulled .spine-rack {
-  padding-left: calc(var(--slot-height) + 0.2rem);
+  padding-left: calc(var(--slot-height) + 0.65rem);
 }
 
 .spine-rack::before {
@@ -674,7 +740,6 @@ const resetBrowse = () => {
   content: "";
   border-radius: 0.24rem;
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.12), transparent 38%),
     linear-gradient(135deg, var(--accent), #17110c);
   box-shadow: 0 12px 16px rgba(50, 31, 18, 0.22);
 }
@@ -700,7 +765,6 @@ const resetBrowse = () => {
   border: 1px solid rgba(255, 255, 255, 0.64);
   border-radius: 0.24rem;
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.22), transparent 26%, rgba(0, 0, 0, 0.28) 100%),
     linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.42)),
     var(--cover);
   background-position: center;
@@ -709,37 +773,15 @@ const resetBrowse = () => {
 }
 
 .spine-record.is-pulled {
-  transform: translateY(0);
+  transform: translateY(-0.12rem);
 }
 
-.spine-record.is-pulled .record-disc-edge {
-  opacity: 0.18;
+.spine-record.is-pulled > * {
+  opacity: 1;
 }
 
-.spine-record.is-pulled .jacket-edge,
-.spine-record.is-pulled .spine-shine,
-.spine-record.is-pulled .spine-badges {
-  opacity: 0.24;
-}
-
-.spine-record.is-pulled .slot-depth {
-  inset: 0.12rem -0.08rem -0.1rem 0.1rem;
-  border: 1px dashed rgba(230, 194, 158, 0.42);
-  background:
-    linear-gradient(180deg, rgba(34, 21, 13, 0.6), rgba(19, 13, 9, 0.86)),
-    linear-gradient(135deg, var(--accent), #17110c);
-  box-shadow: inset 0 0 18px rgba(0, 0, 0, 0.22);
-}
-
-.spine-shine {
-  position: absolute;
-  z-index: 3;
-  inset: 0;
-  border-radius: 0.24rem;
-  background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.16), transparent 30%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 46%);
-  pointer-events: none;
+.spine-record.is-pulled .jacket-edge {
+  box-shadow: 0 0 0 2px rgba(227, 173, 101, 0.55), 0 13px 16px rgba(54, 34, 20, 0.22);
 }
 
 .spine-badges {

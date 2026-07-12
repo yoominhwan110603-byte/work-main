@@ -1,5 +1,6 @@
 export interface MarketMetrics {
   listingCount: number;
+  buyOrderCount?: number;
   favoriteCount: number;
   wishlistCount?: number;
   viewCount: number;
@@ -12,6 +13,8 @@ export interface MarketPriceEstimate {
   minPrice: number;
   maxPrice: number;
   recommendedPrice: number;
+  instantSalePrice?: number;
+  instantSaleAvailable?: boolean;
   sellerPrice: number;
   isValidPrice: boolean;
   priceStatus: 'below_range' | 'within_range' | 'above_range' | string;
@@ -95,12 +98,14 @@ export interface Album {
   status?: 'published' | 'hidden' | 'reserved' | 'sold' | string;
   viewCount?: number;
   favoriteCount?: number;
+  buyOrderCount?: number;
   wishlistCount?: number;
   marketKey?: string;
   basePrice?: number;
   minPrice?: number;
   maxPrice?: number;
   recommendedPrice?: number;
+  instantSalePrice?: number;
   sellerPrice?: number;
   market?: MarketPriceEstimate;
 }

@@ -16,11 +16,14 @@ export function normalizeMarketEstimate(raw: JsonRecord): MarketPriceEstimate {
     minPrice: asNumber(raw.minPrice ?? raw.min_price),
     maxPrice: asNumber(raw.maxPrice ?? raw.max_price),
     recommendedPrice: asNumber(raw.recommendedPrice ?? raw.recommended_price),
+    instantSalePrice: asNumber(raw.instantSalePrice ?? raw.instant_sale_price),
+    instantSaleAvailable: Boolean(raw.instantSaleAvailable ?? raw.instant_sale_available),
     sellerPrice: asNumber(raw.sellerPrice ?? raw.seller_price),
     isValidPrice: Boolean(raw.isValidPrice ?? raw.is_valid_price ?? true),
     priceStatus: String(raw.priceStatus || raw.price_status || 'within_range'),
     metrics: {
       listingCount: asNumber(metrics.listingCount),
+      buyOrderCount: asNumber(metrics.buyOrderCount ?? raw.buyOrderCount ?? raw.buy_order_count),
       favoriteCount: asNumber(metrics.favoriteCount),
       wishlistCount: asNumber(metrics.wishlistCount ?? raw.wishlistCount ?? raw.wishlist_count),
       viewCount: asNumber(metrics.viewCount),
@@ -136,6 +139,35 @@ export async function updateWishlistItem(wishlistId: string, payload: WishlistUp
 export async function fetchWishlistMatches(wishlistId: string) {
   const response = await fetchApi(`/market/wishlist/${encodeURIComponent(wishlistId)}/matches`);
   return readJson<{ wishlistId: string; matches: Album[] }>(response);
+}
+
+export interface InstantSellResult {
+  status: string;
+  chatId?: string;
+  listing?: Album;
+  buyOrder?: {
+    id?: string;
+    buyerId?: string;
+    buyerAlias?: string;
+    buyerName?: string;
+    maxPrice?: number;
+  };
+  transaction?: {
+    id?: string;
+    chatId?: string;
+    buyerId?: string;
+    sellerId?: string;
+    price?: number;
+  };
+}
+
+export async function instantSellListing(listingId: string, sellerId: string) {
+  const response = await fetchApi(`/market/listings/${encodeURIComponent(listingId)}/instant-sell`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ seller_id: sellerId }),
+  });
+  return readJson<InstantSellResult>(response);
 }
 
 export async function removeWishlistItem(wishlistId: string) {
