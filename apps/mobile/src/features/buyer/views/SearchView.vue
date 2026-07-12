@@ -6,7 +6,7 @@
         <div class="min-w-0 flex-1">
           <div class="flex min-h-11 items-center gap-2 rounded-lg bg-gray-100 px-3 sm:px-4">
             <Search :size="18" class="shrink-0 text-gray-400" />
-            <input v-model="query" type="text" class="w-full min-w-0 bg-transparent text-sm outline-none sm:text-base" placeholder="앨범, 아티스트, 카탈로그 번호 검색" autofocus />
+            <input v-model="query" type="text" class="w-full min-w-0 bg-transparent text-sm outline-none sm:text-base" placeholder="앨범, 아티스트, LP 특징 검색" autofocus />
             <button v-if="query" class="p-1" @click="query = ''"><X :size="18" class="text-gray-400" /></button>
           </div>
         </div>
@@ -126,16 +126,8 @@
       <div class="border-b bg-gray-50 px-3 py-2 sm:px-4">
         <div class="flex min-h-9 items-center justify-between gap-3">
           <p class="min-w-0 truncate text-xs text-gray-500">
-            {{ selectedAlbum ? `카탈로그 ${selectedPressingGroups.length}개` : `${resultSummary} · 앨범 ${albumGroups.length}개` }}
+            {{ selectedAlbum ? `LP 판본 ${selectedPressingGroups.length}개` : `${resultSummary} · 앨범 ${albumGroups.length}개` }}
           </p>
-          <button
-            v-if="selectedAlbum"
-            type="button"
-            class="shrink-0 rounded-lg border bg-white px-3 py-2 text-xs text-blue-600"
-            @click="clearSelectedAlbum"
-          >
-            다른 앨범
-          </button>
         </div>
       </div>
 
@@ -158,12 +150,12 @@
                 <ChevronRight :size="18" class="shrink-0 text-gray-400" />
               </div>
               <div class="mt-2 flex flex-wrap gap-1.5 text-xs">
-                <span class="rounded bg-blue-50 px-2 py-1 text-blue-700">카탈로그 {{ group.catalogCount }}개</span>
+                <span class="rounded bg-blue-50 px-2 py-1 text-blue-700">LP 판본 {{ group.catalogCount }}개</span>
                 <span class="rounded bg-emerald-50 px-2 py-1 text-emerald-700">{{ group.bestQualityLabel }}</span>
                 <span class="rounded bg-gray-100 px-2 py-1 text-gray-700">매물 {{ group.listingCount }}개</span>
               </div>
               <p class="mt-2 truncate text-xs text-gray-500">
-                {{ group.pressings.slice(0, 3).map(pressing => pressing.catalogNumber).join(' · ') || '카탈로그 번호 미상' }}
+                {{ group.pressings.slice(0, 3).map(pressing => pressing.displayName).join(' · ') || 'LP 판본 정보 미상' }}
               </p>
             </div>
           </div>
@@ -174,8 +166,8 @@
         <div class="rounded-lg border bg-white p-3">
           <div class="flex items-start justify-between gap-3">
             <div>
-              <p class="text-sm font-medium text-gray-950">2. 카탈로그 번호 선택</p>
-              <p class="mt-1 text-xs text-gray-500">카탈로그 번호를 누르면 같은 판본의 상품만 품질별로 확인합니다.</p>
+              <p class="text-sm font-medium text-gray-950">2. LP 특징 선택</p>
+              <p class="mt-1 text-xs text-gray-500">LP 특징 이름을 누르면 같은 판본의 상품만 품질별로 확인합니다.</p>
             </div>
             <span class="shrink-0 rounded-full bg-gray-100 px-2 py-1 text-xs text-gray-600">{{ selectedPressingGroups.length }}개</span>
           </div>
@@ -192,10 +184,10 @@
             <VinylCover :src="pressing.coverImage" :alt="pressing.title" class="h-16 w-16 shrink-0 rounded bg-gray-100 object-cover" />
             <div class="min-w-0 flex-1">
               <div class="flex items-center gap-2">
-                <h3 class="truncate text-base font-semibold text-gray-950">{{ pressing.catalogNumber }}</h3>
+                <h3 class="truncate text-base font-semibold text-gray-950">{{ pressing.displayName }}</h3>
                 <span class="shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">{{ pressing.listingCount }}개</span>
               </div>
-              <p class="mt-1 truncate text-xs text-gray-500">{{ pressingDescription(pressing) }}</p>
+              <p class="mt-1 truncate text-xs text-gray-500">{{ pressing.featureDescription }}</p>
               <div class="mt-2 flex flex-wrap gap-1.5">
                 <span
                   v-for="bucket in pressing.qualityBuckets"
@@ -224,7 +216,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, ChevronDown, ChevronRight, Search, SlidersHorizontal, X } from 'lucide-vue-next';
 import { useAppStore } from '@/shared/stores/appStore';
 import VinylCover from '@/shared/components/VinylCover.vue';
-import { groupListingsByAlbum, groupListingsByPressing, matchesAlbumTitle, type AlbumProductGroup, type PressingGroup } from '@/features/buyer/services/pressingCatalog';
+import { groupListingsByAlbum, groupListingsByPressing, matchesAlbumTitle, type AlbumProductGroup } from '@/features/buyer/services/pressingCatalog';
 import type { Album } from '@/shared/models/market';
 
 const router = useRouter();
@@ -240,7 +232,6 @@ type SearchFilters = {
   priceRange: string;
   audioGrade: string[];
   quality: string;
-  instantOnly: boolean;
   rareOnly: boolean;
   firstPressOnly: boolean;
   location: string;
@@ -258,7 +249,6 @@ const folderMeta: Record<string, { label: string; description: string }> = {
   'low-price': { label: '낮은 가격 폴더', description: '5만원 이하 매물을 낮은 가격순으로 보여줍니다.' },
   nearby: { label: '내 주변 폴더', description: '기본 거래 지역과 가까운 매물을 보여줍니다.' },
   quality: { label: '고품질 폴더', description: 'NM, VG+ 또는 음질 점수 85점 이상 매물입니다.' },
-  instant: { label: '즉시 판매 가능 폴더', description: '구매 대기와 매칭되어 바로 거래 가능한 매물입니다.' },
   recent: { label: '최근 등록 폴더', description: '새로 올라온 LP를 최신순으로 보여줍니다.' },
 };
 const currentFolder = computed(() => folderMeta[folderKey.value] || null);
@@ -297,7 +287,6 @@ const initialFilters = (): SearchFilters => ({
   priceRange: queryString(route.query.priceRange),
   audioGrade: [],
   quality: queryString(route.query.quality),
-  instantOnly: queryString(route.query.instant) === 'true',
   rareOnly: route.query.rare === 'true' || folderKey.value === 'rare',
   firstPressOnly: false,
   location: queryString(route.query.location),
@@ -311,7 +300,6 @@ const cloneFilters = (value: SearchFilters): SearchFilters => ({
   genres: [...value.genres],
   audioGrade: [...value.audioGrade],
   quality: value.quality,
-  instantOnly: value.instantOnly,
   tags: [...value.tags],
 });
 
@@ -337,7 +325,6 @@ const activeFilterCount = computed(() => {
     + filters.tags.length
     + Number(Boolean(filters.priceRange))
     + Number(Boolean(filters.quality))
-    + Number(filters.instantOnly)
     + Number(filters.rareOnly)
     + Number(filters.firstPressOnly)
     + Number(Boolean(filters.location.trim()))
@@ -374,7 +361,6 @@ const resetFilters = () => {
   draftFilters.priceRange = '';
   draftFilters.audioGrade = [];
   draftFilters.quality = '';
-  draftFilters.instantOnly = false;
   draftFilters.rareOnly = false;
   draftFilters.firstPressOnly = false;
   draftFilters.location = '';
@@ -402,7 +388,6 @@ const matchesSelectedTags = (album: Album, selectedTags: string[]) => {
 };
 
 const matchesHighQuality = (album: Album) => ['NM', 'VG+'].includes(album.audioGrade) || album.audioScore >= 85;
-const matchesInstantSale = (album: Album) => Boolean(album.market?.instantSaleAvailable || Number(album.instantSalePrice || 0) > 0);
 const nearbyNeedsLocation = computed(() => folderKey.value === 'nearby' && !draftFilters.location.trim());
 const resultSummary = computed(() => currentFolder.value?.label || (query.value ? `"${query.value}" 검색 결과` : '전체 검색 결과'));
 const clearFolderFilter = () => {
@@ -432,7 +417,6 @@ const filteredAlbums = computed(() => store.listings
       && (filters.genres.length === 0 || filters.genres.includes(album.genre))
       && (filters.audioGrade.length === 0 || filters.audioGrade.includes(album.audioGrade))
       && (!filters.quality || (filters.quality === 'high' && matchesHighQuality(album)))
-      && (!filters.instantOnly || matchesInstantSale(album))
       && (!filters.rareOnly || matchesRareCriteria(album))
       && (!filters.firstPressOnly || album.isFirstPress)
       && (!filters.location.trim() || album.location.includes(filters.location.trim()))
@@ -461,18 +445,6 @@ const selectAlbumGroup = (key: string) => {
   selectedAlbumKey.value = key;
   router.replace({ query: { ...route.query, q: query.value || undefined, albumKey: key } });
 };
-
-const clearSelectedAlbum = () => {
-  selectedAlbumKey.value = '';
-  router.replace({ query: { ...route.query, albumKey: undefined } });
-};
-
-const pressingDescription = (pressing: PressingGroup) => [
-  pressing.releaseLabel,
-  pressing.releaseCountry,
-  pressing.year ? `${pressing.year}년` : '',
-  pressing.bestQualityLabel,
-].filter(Boolean).join(' · ') || '판본 상세 정보 확인';
 
 const openPressing = (key: string) => {
   router.push({ path: '/app/pressing', query: { key } });

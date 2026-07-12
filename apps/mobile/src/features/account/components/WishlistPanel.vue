@@ -4,7 +4,7 @@
       <div class="flex items-start justify-between gap-3">
         <div>
           <h2 class="text-base font-medium">위시리스트 알림</h2>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">카탈로그 번호나 앨범명/아티스트로 LP 판본을 찾아 등록합니다.</p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">앨범명/아티스트로 상위 10개 앨범을 보고, LP 특징을 골라 등록합니다.</p>
         </div>
         <span class="shrink-0 text-2xl leading-none" aria-hidden="true">🙏</span>
       </div>
@@ -30,7 +30,7 @@
         </div>
         <button
           type="button"
-          :disabled="!lookupReady() || loadingVersions || loadingMoreAlbums"
+          :disabled="!lookupReady() || loadingVersions"
           class="w-full rounded-lg border border-blue-600 py-2.5 text-sm text-blue-600 disabled:border-gray-200 disabled:text-gray-400 dark:disabled:border-neutral-800"
           @click="lookupDiscogs"
         >
@@ -47,32 +47,32 @@
             <span class="min-w-0 flex-1">
               <span class="block truncate text-sm font-medium">{{ candidate.title }}</span>
               <span class="mt-1 block truncate text-xs text-gray-500">{{ candidate.artist }} · {{ candidate.year || '연도 미상' }}</span>
-              <span class="mt-1 block truncate text-xs text-gray-500">{{ candidate.country }} · {{ candidate.label }} · {{ candidate.catalogNumber }}</span>
+              <span class="mt-1 block truncate text-xs text-gray-500">{{ candidateFeatureSummary(candidate) }}</span>
             </span>
           </button>
         </div>
 
         <section v-if="albumMatches.length && !selectedAlbum" class="space-y-2 rounded-lg border p-3 dark:border-neutral-700">
           <div class="flex items-center justify-between gap-3">
-            <h3 class="text-sm font-medium">앨범을 먼저 선택해 주세요</h3>
-            <span class="text-xs text-gray-500">{{ albumTotal.toLocaleString() }}개 결과</span>
+            <h3 class="text-sm font-medium">상위 10개 앨범 중 선택해 주세요</h3>
+            <span class="text-xs text-gray-500">{{ albumMatches.length }}개 표시 / 전체 {{ albumTotal.toLocaleString() }}개</span>
           </div>
           <div class="divide-y dark:divide-neutral-800">
-            <button v-for="album in albumMatches" :key="album.masterId" type="button" class="flex w-full gap-3 py-3 text-left active:bg-gray-50 dark:active:bg-neutral-800" @click="selectAlbum(album)">
+            <button v-for="(album, index) in albumMatches" :key="album.masterId" type="button" class="flex w-full gap-3 py-3 text-left active:bg-gray-50 dark:active:bg-neutral-800" @click="selectAlbum(album)">
               <VinylCover :src="album.coverImageUrl" :alt="album.title" class="h-16 w-16 shrink-0 rounded object-cover" />
               <span class="min-w-0 flex-1">
-                <span class="block truncate text-sm font-medium">{{ album.title }}</span>
+                <span class="flex min-w-0 items-center gap-2">
+                  <span class="shrink-0 rounded bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-600 dark:bg-neutral-800 dark:text-neutral-300">#{{ index + 1 }}</span>
+                  <span class="truncate text-sm font-medium">{{ album.title }}</span>
+                </span>
                 <span class="mt-1 block truncate text-xs text-gray-500">{{ album.artist }} · {{ album.year || '연도 미상' }}</span>
+                <span class="mt-1 block truncate text-xs text-gray-500">{{ albumSearchFeatureSummary(album) }}</span>
                 <span class="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-500">
-                  <span>소장 {{ album.communityHave.toLocaleString() }}</span>
-                  <span>위시 {{ album.communityWant.toLocaleString() }}</span>
+                  <span v-for="feature in albumSearchFeatures(album)" :key="`${album.masterId}-${feature}`" class="rounded bg-gray-100 px-2 py-1 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">{{ feature }}</span>
                 </span>
               </span>
             </button>
           </div>
-          <button v-if="hasMoreAlbums" type="button" :disabled="loadingMoreAlbums" class="w-full rounded-lg border py-2.5 text-sm text-blue-600 disabled:text-gray-400 dark:border-neutral-700" @click="loadMoreAlbums">
-            {{ loadingMoreAlbums ? '앨범을 불러오는 중' : '앨범 20개 더보기' }}
-          </button>
         </section>
 
         <section v-if="selectedAlbum" class="space-y-3 rounded-lg border p-3 dark:border-neutral-700">
@@ -100,7 +100,7 @@
                     <span class="truncate text-sm font-medium">{{ candidate.year || '연도 미상' }} · {{ candidate.country }}</span>
                     <span class="shrink-0 rounded bg-blue-50 px-2 py-0.5 text-[10px] text-blue-700 dark:bg-blue-950 dark:text-blue-200">{{ candidate.representativeReason }}</span>
                   </span>
-                  <span class="mt-1 block truncate text-xs text-gray-500">{{ candidate.label }} · {{ candidate.catalogNumber }}</span>
+                  <span class="mt-1 block truncate text-xs text-gray-500">{{ candidateFeatureSummary(candidate) }}</span>
                   <span class="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-500">
                     <span>소장 {{ (candidate.communityHave || 0).toLocaleString() }}</span>
                     <span>위시 {{ (candidate.communityWant || 0).toLocaleString() }}</span>
@@ -117,7 +117,7 @@
                 <VinylCover :src="candidate.coverImageUrl" :alt="candidate.title" class="h-16 w-16 shrink-0 rounded object-cover" />
                 <span class="min-w-0 flex-1">
                   <span class="block truncate text-sm font-medium">{{ candidate.year || '연도 미상' }} · {{ candidate.country }}</span>
-                  <span class="mt-1 block truncate text-xs text-gray-500">{{ candidate.label }} · {{ candidate.catalogNumber }}</span>
+                  <span class="mt-1 block truncate text-xs text-gray-500">{{ candidateFeatureSummary(candidate) }}</span>
                   <span class="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-500">
                     <span>소장 {{ (candidate.communityHave || 0).toLocaleString() }}</span>
                     <span>위시 {{ (candidate.communityWant || 0).toLocaleString() }}</span>
@@ -128,12 +128,7 @@
           </div>
 
           <p v-if="versionPartial" class="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">Discogs 응답이 중단되어 일부 판본만 표시했습니다.</p>
-          <div class="flex gap-2">
-            <button v-if="versionRemainingCount > 0" type="button" :disabled="loadingMoreVersions" class="flex-1 rounded-lg border py-2.5 text-sm text-blue-600 disabled:text-gray-400 dark:border-neutral-700" @click="loadMoreVersions">
-              {{ loadingMoreVersions ? '판본을 불러오는 중' : `다른 판본 20개 더보기 (${versionRemainingCount.toLocaleString()}개 남음)` }}
-            </button>
-            <button v-if="versionPartial" type="button" :disabled="loadingVersions" class="rounded-lg border px-4 py-2.5 text-sm dark:border-neutral-700" @click="retryVersions">재시도</button>
-          </div>
+          <button v-if="versionPartial" type="button" :disabled="loadingVersions" class="rounded-lg border px-4 py-2.5 text-sm dark:border-neutral-700" @click="retryVersions">재시도</button>
         </section>
 
         <div v-if="selectedRelease" class="flex gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950">
@@ -142,7 +137,7 @@
             <p class="truncate font-medium text-blue-950 dark:text-blue-100">{{ selectedRelease.title }}</p>
             <p class="mt-1 truncate text-xs text-blue-800 dark:text-blue-200">{{ selectedRelease.artist }}</p>
             <p class="mt-2 text-xs text-blue-700 dark:text-blue-300">{{ selectedRelease.year || '연도 미상' }} · {{ selectedRelease.country }} · {{ selectedRelease.label }}</p>
-            <p class="mt-1 text-xs text-blue-700 dark:text-blue-300">Cat. {{ selectedRelease.catalogNumber }}</p>
+            <p class="mt-1 text-xs text-blue-700 dark:text-blue-300">특징 {{ candidateFeatureSummary(selectedRelease) }}</p>
           </div>
         </div>
 
@@ -179,7 +174,7 @@
           <div class="min-w-0 flex-1">
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
-                <h3 class="truncate font-medium">{{ item.title || item.catalogNumber || '앨범 조건' }}</h3>
+                <h3 class="truncate font-medium">{{ item.title || '앨범 조건' }}</h3>
                 <p v-if="item.artist" class="mt-1 truncate text-sm text-gray-600 dark:text-gray-300">{{ item.artist }}</p>
               </div>
               <div v-if="own" class="flex shrink-0">
@@ -188,9 +183,7 @@
               </div>
             </div>
             <div class="mt-2 flex flex-wrap gap-2 text-xs">
-              <span v-if="item.catalogNumber" class="rounded bg-gray-100 px-2 py-1 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">Cat. {{ item.catalogNumber }}</span>
-              <span v-if="item.year" class="rounded bg-gray-100 px-2 py-1 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">{{ item.year }}</span>
-              <span v-if="item.releaseCountry" class="rounded bg-gray-100 px-2 py-1 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">{{ item.releaseCountry }}</span>
+              <span v-for="feature in wishlistItemFeatures(item)" :key="`${item.id}-${feature}`" class="rounded bg-gray-100 px-2 py-1 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">{{ feature }}</span>
               <span v-if="own" :class="['rounded px-2 py-1', item.visibility === 'public' ? 'bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-200' : 'bg-gray-100 text-gray-600 dark:bg-neutral-800 dark:text-gray-300']">{{ item.visibility === 'public' ? '공개' : '비공개' }}</span>
               <span v-if="own" class="rounded bg-blue-50 px-2 py-1 text-blue-700 dark:bg-blue-950 dark:text-blue-200">현재 판매 {{ (matches[item.id] || []).length }}건</span>
             </div>
@@ -224,14 +217,13 @@ import { Pencil, Trash2 } from 'lucide-vue-next';
 import {
   createPressingInfo,
   fetchDiscogsCandidates,
-  fetchDiscogsVersionPage,
   fetchRepresentativeVersions,
   searchDiscogsAlbums,
   type AlbumCandidate,
   type DiscogsAlbumSummary,
 } from '@/features/seller/services/discogs';
 import type { Album, WishlistItem } from '@/shared/models/market';
-import { addWishlistItem, fetchPublicWishlist, fetchWishlist, fetchWishlistMatches, removeWishlistItem, updateWishlistItem } from '@/shared/services/market';
+import { addWishlistItem, fetchPublicWishlist, fetchWishlistMatches, removeWishlistItem, updateWishlistItem } from '@/shared/services/market';
 import { useAppStore } from '@/shared/stores/appStore';
 import VinylCover from '@/shared/components/VinylCover.vue';
 
@@ -242,7 +234,6 @@ const items = ref<WishlistItem[]>([]);
 const matches = ref<Record<string, Album[]>>({});
 const candidates = ref<AlbumCandidate[]>([]);
 const albumMatches = ref<DiscogsAlbumSummary[]>([]);
-const albumBuffer = ref<DiscogsAlbumSummary[]>([]);
 const selectedAlbum = ref<DiscogsAlbumSummary | null>(null);
 const representativeVersions = ref<AlbumCandidate[]>([]);
 const additionalVersions = ref<AlbumCandidate[]>([]);
@@ -250,27 +241,87 @@ const selectedRelease = ref<AlbumCandidate | null>(null);
 const loading = ref(false);
 const saving = ref(false);
 const loadingVersions = ref(false);
-const loadingMoreAlbums = ref(false);
-const loadingMoreVersions = ref(false);
 const lookupMessage = ref('');
 const lookupError = ref(false);
 const actionMessage = ref('');
 const actionError = ref(false);
 const editingId = ref('');
 const form = reactive({ title: '', artist: '', catalogNumber: '', isPublic: false });
-const albumPage = ref(0);
-const albumPages = ref(0);
 const albumTotal = ref(0);
 const albumQueryTitle = ref('');
 const albumQueryArtist = ref('');
 const versionTotal = ref(0);
-const versionOffset = ref(0);
-const versionRemainingCount = ref(0);
 const versionPartial = ref(false);
 let lookupTimer: number | null = null;
 let lookupRequest = 0;
 let versionRequest = 0;
 let applyingCandidate = false;
+
+const compactFeatureText = (value: unknown) => String(value || '').trim().replace(/\s+/g, ' ');
+const countryFeature = (value: unknown) => {
+  const text = compactFeatureText(value);
+  const normalized = text.toUpperCase();
+  const map: Record<string, string> = {
+    US: '미국반',
+    USA: '미국반',
+    UK: '영국반',
+    GB: '영국반',
+    JP: '일본반',
+    JAPAN: '일본반',
+    KR: '국내반',
+    KOREA: '국내반',
+    'SOUTH KOREA': '국내반',
+    DE: '독일반',
+    GERMANY: '독일반',
+    FR: '프랑스반',
+    FRANCE: '프랑스반',
+    EU: 'EU반',
+  };
+  return map[normalized] || (text ? `${text}반` : '');
+};
+const uniqueFeatureParts = (parts: Array<string | undefined | null>) => {
+  const seen = new Set<string>();
+  return parts
+    .map(compactFeatureText)
+    .filter(part => {
+      const normalized = part.toLocaleLowerCase('ko-KR');
+      if (!normalized || seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+};
+const communityFeature = (have = 0, want = 0) => {
+  if (want >= 1000) return '위시 많은 LP';
+  if (have >= 1000) return '소장 인기 LP';
+  if (want > have && want > 0) return '수요 우세';
+  if (have > 0 || want > 0) return 'Discogs 기록 있음';
+  return '정보 확인 필요';
+};
+const albumSearchFeatures = (album: DiscogsAlbumSummary) => uniqueFeatureParts([
+  album.exactMatch ? '정확도 높음' : '연관 앨범',
+  album.year ? `${album.year}년 발매` : '연도 미상',
+  communityFeature(album.communityHave, album.communityWant),
+  album.communityHave ? `소장 ${album.communityHave.toLocaleString()}` : '',
+  album.communityWant ? `위시 ${album.communityWant.toLocaleString()}` : '',
+]).slice(0, 4);
+const albumSearchFeatureSummary = (album: DiscogsAlbumSummary) => albumSearchFeatures(album).join(' · ') || '앨범 특징 확인';
+const candidateFeatureSummary = (candidate: AlbumCandidate | null | undefined) => {
+  if (!candidate) return 'LP 특징 확인';
+  return uniqueFeatureParts([
+    countryFeature(candidate.country),
+    candidate.year ? `${candidate.year}년반` : '',
+    candidate.label,
+    candidate.pressing,
+    candidate.representativeReason,
+    communityFeature(candidate.communityHave || 0, candidate.communityWant || 0),
+  ]).slice(0, 5).join(' · ') || 'LP 특징 확인';
+};
+const wishlistItemFeatures = (item: WishlistItem) => uniqueFeatureParts([
+  countryFeature(item.releaseCountry),
+  item.year ? `${item.year}년반` : '',
+  item.releaseLabel,
+  item.pressingCondition,
+]).slice(0, 4);
 
 const formValid = computed(() => {
   const hasIdentity = Boolean(selectedRelease.value || form.catalogNumber.trim() || (form.title.trim() && form.artist.trim()));
@@ -281,7 +332,6 @@ const formValid = computed(() => {
     || additionalVersions.value.length > 0;
   return hasIdentity && (!hasDiscogsChoices || Boolean(selectedRelease.value));
 });
-const hasMoreAlbums = computed(() => albumBuffer.value.length > 0 || albumPage.value < albumPages.value);
 const lookupReady = () => form.catalogNumber.trim().length >= 3
   || form.title.trim().length >= 2
   || form.artist.trim().length >= 2;
@@ -296,8 +346,6 @@ const clearVersionResults = () => {
   representativeVersions.value = [];
   additionalVersions.value = [];
   versionTotal.value = 0;
-  versionOffset.value = 0;
-  versionRemainingCount.value = 0;
   versionPartial.value = false;
   versionRequest += 1;
 };
@@ -305,9 +353,6 @@ const clearVersionResults = () => {
 const clearSearchResults = () => {
   candidates.value = [];
   albumMatches.value = [];
-  albumBuffer.value = [];
-  albumPage.value = 0;
-  albumPages.value = 0;
   albumTotal.value = 0;
   albumQueryTitle.value = '';
   albumQueryArtist.value = '';
@@ -349,8 +394,6 @@ const loadVersionsForAlbum = async (album: DiscogsAlbumSummary, refresh = false)
     if (requestId !== versionRequest || selectedAlbum.value?.masterId !== album.masterId) return;
     representativeVersions.value = result.representative;
     versionTotal.value = result.total;
-    versionOffset.value = 0;
-    versionRemainingCount.value = result.remainingCount;
     versionPartial.value = result.partial;
     if (result.representative.length) {
       lookupMessage.value = `대표 LP 판본 ${result.representative.length}개가 있습니다.`;
@@ -384,8 +427,6 @@ const loadReleaseFallbackForAlbum = async (album: DiscogsAlbumSummary, requestId
     representativeVersions.value = releases.slice(0, 5);
     additionalVersions.value = releases.slice(5);
     versionTotal.value = releases.length;
-    versionOffset.value = 0;
-    versionRemainingCount.value = 0;
     versionPartial.value = false;
     lookupError.value = releases.length === 0;
     lookupMessage.value = releases.length
@@ -421,78 +462,20 @@ const retryVersions = async () => {
   if (selectedAlbum.value) await loadVersionsForAlbum(selectedAlbum.value, true);
 };
 
-const loadMoreVersions = async () => {
-  const album = selectedAlbum.value;
-  if (!album || loadingMoreVersions.value || versionRemainingCount.value <= 0) return;
-  loadingMoreVersions.value = true;
-  try {
-    const result = await fetchDiscogsVersionPage(album.masterId, versionOffset.value, 20);
-    if (selectedAlbum.value?.masterId !== album.masterId) return;
-    const seen = new Set([...representativeVersions.value, ...additionalVersions.value].map(item => item.releaseId));
-    additionalVersions.value.push(...result.versions.filter(item => !seen.has(item.releaseId)));
-    versionOffset.value = result.nextOffset;
-    versionRemainingCount.value = result.remainingCount;
-    versionPartial.value = result.partial;
-  } catch (error) {
-    lookupError.value = true;
-    lookupMessage.value = error instanceof Error ? error.message : '추가 판본을 불러오지 못했습니다.';
-  } finally {
-    loadingMoreVersions.value = false;
-  }
-};
-
-const loadMoreAlbums = async () => {
-  if (loadingMoreAlbums.value || !hasMoreAlbums.value) return;
-  loadingMoreAlbums.value = true;
-  try {
-    let nextPage = albumPage.value + 1;
-    const seen = new Set(albumMatches.value.map(album => album.masterId));
-    albumBuffer.value.forEach(album => seen.add(album.masterId));
-    while (albumBuffer.value.length < 20 && nextPage <= albumPages.value) {
-      const result = await searchDiscogsAlbums(albumQueryTitle.value, albumQueryArtist.value, nextPage, 10);
-      for (const album of result.albums) {
-        if (seen.has(album.masterId)) continue;
-        seen.add(album.masterId);
-        albumBuffer.value.push(album);
-      }
-      albumPage.value = result.pagination.page;
-      albumPages.value = result.pagination.pages;
-      albumTotal.value = result.pagination.total;
-      nextPage += 1;
-    }
-    albumMatches.value.push(...albumBuffer.value.splice(0, 20));
-  } catch (error) {
-    lookupError.value = true;
-    lookupMessage.value = error instanceof Error ? error.message : '추가 앨범을 불러오지 못했습니다.';
-  } finally {
-    loadingMoreAlbums.value = false;
-  }
-};
-
 const lookupAlbumVersions = async (requestId: number) => {
   albumQueryTitle.value = form.title.trim();
   albumQueryArtist.value = form.artist.trim();
   const result = await searchDiscogsAlbums(albumQueryTitle.value, albumQueryArtist.value, 1, 10);
   if (requestId !== lookupRequest) return false;
-  albumMatches.value = result.albums;
-  albumPage.value = result.pagination.page;
-  albumPages.value = result.pagination.pages;
+  albumMatches.value = result.albums.slice(0, 10);
   albumTotal.value = result.pagination.total;
-  const exactMatches = result.albums.filter(album => album.exactMatch);
-  const automaticAlbum = result.albums.length === 1
-    ? result.albums[0]
-    : form.title.trim() && exactMatches.length === 1
-      ? exactMatches[0]
-      : null;
-  if (automaticAlbum) {
-    await selectAlbum(automaticAlbum);
-  } else if (result.albums.length > 0) {
-    lookupMessage.value = `${result.pagination.total.toLocaleString()}개 앨범을 찾았습니다. 앨범을 먼저 선택해 주세요.`;
+  if (albumMatches.value.length > 0) {
+    lookupMessage.value = `상위 ${albumMatches.value.length}개 앨범을 찾았습니다. 특징을 보고 앨범을 선택해 주세요.`;
   } else {
     lookupError.value = true;
     lookupMessage.value = 'Discogs 앨범 결과가 없습니다. 제목과 아티스트를 확인해 주세요.';
   }
-  return result.albums.length > 0;
+  return albumMatches.value.length > 0;
 };
 
 const lookupDiscogs = async () => {
@@ -559,7 +542,7 @@ const loadItems = async () => {
   loading.value = true;
   try {
     items.value = props.own
-      ? (store.isLoggedIn ? (await fetchWishlist()).wishlist : [])
+      ? (store.isLoggedIn ? await store.loadWishlistFavorites(true) : [])
       : (await fetchPublicWishlist(props.ownerId)).wishlist;
     await loadMatches();
   } catch (error) {

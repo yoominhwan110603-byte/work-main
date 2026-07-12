@@ -42,7 +42,7 @@
         <div class="flex items-end justify-between gap-3">
           <div>
             <h2 class="text-lg font-semibold">"{{ query }}" 검색 결과</h2>
-            <p class="mt-1 text-sm text-gray-500">앨범을 고른 뒤 카탈로그 번호별 매물을 확인하세요.</p>
+            <p class="mt-1 text-sm text-gray-500">앨범을 고른 뒤 LP 특징별 매물을 확인하세요.</p>
           </div>
           <span class="shrink-0 text-xs text-gray-500">{{ searchedGroups.length }}개</span>
         </div>
@@ -51,7 +51,7 @@
           v-for="group in searchedGroups"
           :key="group.key"
           :group="group"
-          action-label="카탈로그 선택"
+          action-label="LP 특징 선택"
           @open="openAlbumGroup(group)"
         />
 
@@ -84,36 +84,6 @@
           </div>
         </section>
 
-        <section class="border-y bg-white py-5 dark:border-slate-800 dark:bg-slate-900/70">
-          <div class="mb-3 flex items-center justify-between px-4">
-            <div>
-              <h2 class="text-lg font-semibold">찜한 LP</h2>
-              <p class="mt-1 text-sm text-gray-500">관심 있는 LP를 모아두고 가격과 상태를 빠르게 비교하세요.</p>
-            </div>
-            <button class="shrink-0 text-sm text-blue-600" @click="router.push('/app/favorites')">
-              {{ favoriteAlbums.length ? '전체 보기' : '찜 목록' }}
-            </button>
-          </div>
-          <div v-if="favoriteAlbums.length" class="overflow-x-auto px-4">
-            <div class="flex gap-3 pb-1">
-              <div v-for="album in favoriteAlbums" :key="album.id" class="w-64 shrink-0">
-                <FavoriteAlbumPreview
-                  :album="album"
-                  @open="router.push(`/app/album/${album.id}`)"
-                  @toggle="store.toggleFavorite(album.id)"
-                />
-              </div>
-            </div>
-          </div>
-          <div v-else class="mx-4 rounded-xl border border-dashed bg-stone-50 p-5 text-center dark:border-slate-700 dark:bg-slate-900">
-            <Heart :size="34" class="mx-auto mb-3 text-stone-300 dark:text-slate-600" />
-            <p class="font-medium text-gray-800 dark:text-slate-100">아직 찜한 LP가 없습니다</p>
-            <p class="mt-1 text-sm text-gray-500">앨범 상세에서 하트를 누르면 홈에서 바로 볼 수 있어요.</p>
-            <button class="mt-4 rounded-lg bg-stone-900 px-4 py-2 text-sm text-white dark:bg-stone-100 dark:text-stone-900" @click="router.push('/app/search')">
-              LP 둘러보기
-            </button>
-          </div>
-        </section>
       </template>
     </main>
   </div>
@@ -122,7 +92,7 @@
 <script setup lang="ts">
 import { computed, defineComponent, h, onMounted, ref, type PropType } from 'vue';
 import { useRouter } from 'vue-router';
-import { Bell, ChevronRight, Heart, Search, SlidersHorizontal, X } from 'lucide-vue-next';
+import { Bell, ChevronRight, Search, SlidersHorizontal, X } from 'lucide-vue-next';
 import { groupListingsByAlbum, matchesAlbumTitle, type AlbumProductGroup } from '@/features/buyer/services/pressingCatalog';
 import { useAppStore } from '@/shared/stores/appStore';
 import VinylCover from '@/shared/components/VinylCover.vue';
@@ -174,10 +144,6 @@ const preferenceGroups = computed(() => groupListingsByAlbum(store.listings)
   .sort((left, right) => groupScore(right) - groupScore(left) || right.listingCount - left.listingCount)
   .slice(0, 8));
 
-const favoriteAlbums = computed<Album[]>(() => store.listings
-  .filter(album => store.favorites.includes(String(album.id)))
-  .slice(0, 8));
-
 const openAlbumGroup = (group: AlbumProductGroup) => {
   router.push({
     path: '/app/search/results',
@@ -208,57 +174,6 @@ const recommendReason = (group: AlbumProductGroup) => {
 
 const priceLabel = (price: number) => price > 0 ? `${price.toLocaleString()}원부터` : '가격 확인';
 
-const FavoriteAlbumPreview = defineComponent({
-  props: {
-    album: { type: Object as PropType<Album>, required: true },
-  },
-  emits: ['open', 'toggle'],
-  setup(props, { emit }) {
-    return () => h('article', {
-      class: 'overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900',
-      role: 'button',
-      tabindex: 0,
-      onClick: () => emit('open'),
-      onKeydown: (event: KeyboardEvent) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        emit('open');
-      },
-    }, [
-      h('div', { class: 'relative' }, [
-        h(VinylCover, {
-          src: props.album.images[0],
-          alt: props.album.title,
-          class: 'aspect-square w-full bg-stone-100 object-cover dark:bg-slate-800',
-        }),
-        h('span', { class: 'absolute left-2 top-2 rounded-full bg-black/55 px-2 py-1 text-xs font-semibold text-white backdrop-blur' }, props.album.audioGrade || '등급 확인'),
-      ]),
-      h('div', { class: 'space-y-1 p-3' }, [
-        h('h3', { class: 'truncate text-base font-semibold text-gray-950 dark:text-slate-100' }, props.album.title),
-        h('p', { class: 'truncate text-sm text-gray-500' }, props.album.artist),
-        h('div', { class: 'flex items-end justify-between gap-2 pt-1' }, [
-          h('div', { class: 'min-w-0' }, [
-            h('p', { class: 'text-base font-semibold text-stone-900 dark:text-stone-100' }, `${props.album.price.toLocaleString()}원`),
-            h('p', { class: 'truncate text-xs text-gray-500' }, props.album.location || '거래 위치 확인'),
-          ]),
-          h('button', {
-            type: 'button',
-            class: 'flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-500 active:bg-red-100',
-            'aria-label': '찜 해제',
-            onKeydown: (event: KeyboardEvent) => {
-              event.stopPropagation();
-            },
-            onClick: (event: Event) => {
-              event.stopPropagation();
-              emit('toggle');
-            },
-          }, [h(Heart, { size: 18, class: 'fill-red-500' })]),
-        ]),
-      ]),
-    ]);
-  },
-});
-
 const AlbumGroupButton = defineComponent({
   props: {
     group: { type: Object as PropType<AlbumProductGroup>, required: true },
@@ -288,11 +203,11 @@ const AlbumGroupButton = defineComponent({
           ]),
           h('div', { class: 'mt-2 flex flex-wrap gap-1.5 text-xs' }, [
             props.reason ? h('span', { class: 'rounded bg-slate-100 px-2 py-1 text-slate-700' }, props.reason) : null,
-            h('span', { class: 'rounded bg-blue-50 px-2 py-1 text-blue-700' }, `카탈로그 ${props.group.catalogCount}개`),
+            h('span', { class: 'rounded bg-blue-50 px-2 py-1 text-blue-700' }, `LP 판본 ${props.group.catalogCount}개`),
             h('span', { class: 'rounded bg-emerald-50 px-2 py-1 text-emerald-700' }, props.group.bestQualityLabel),
             h('span', { class: 'rounded bg-gray-100 px-2 py-1 text-gray-700' }, priceLabel(props.group.lowestPrice)),
           ]),
-          h('p', { class: 'mt-2 truncate text-xs text-gray-500' }, `${props.actionLabel} · ${props.group.pressings.slice(0, 3).map(pressing => pressing.catalogNumber).join(' · ') || '카탈로그 번호 미상'}`),
+          h('p', { class: 'mt-2 truncate text-xs text-gray-500' }, `${props.actionLabel} · ${props.group.pressings.slice(0, 3).map(pressing => pressing.displayName).join(' · ') || 'LP 판본 정보 미상'}`),
         ]),
       ]),
     ]);

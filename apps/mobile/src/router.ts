@@ -23,15 +23,12 @@ const CollectionCreateView = () => import('@/features/collection/views/Collectio
 const CollectionDetailView = () => import('@/features/collection/views/CollectionDetailView.vue');
 const CollectionOfferView = () => import('@/features/collection/views/CollectionOfferView.vue');
 const ChatView = () => import('@/features/transaction/views/ChatView.vue');
-const CommentsView = () => import('@/features/buyer/views/CommentsView.vue');
 const PriceOfferView = () => import('@/features/buyer/views/PriceOfferView.vue');
-const BuyOrderView = () => import('@/features/buyer/views/BuyOrderView.vue');
 const OffersView = () => import('@/features/seller/views/OffersView.vue');
 const OngoingTransactionView = () => import('@/features/transaction/views/OngoingTransactionView.vue');
 const TransactionLocationView = () => import('@/features/transaction/views/TransactionLocationView.vue');
 const CancelTransactionView = () => import('@/features/transaction/views/CancelTransactionView.vue');
 const ReviewView = () => import('@/features/transaction/views/ReviewView.vue');
-const ReportView = () => import('@/features/transaction/views/ReportView.vue');
 const NotificationsView = () => import('@/features/account/views/NotificationsView.vue');
 const ProfileView = () => import('@/features/account/views/ProfileView.vue');
 const SettingsView = () => import('@/features/account/views/SettingsView.vue');
@@ -73,14 +70,11 @@ export const router = createRouter({
     { path: '/collection/:id', component: CollectionDetailView },
     { path: '/collection/:id/offer', component: CollectionOfferView },
     { path: '/transaction/chat/:chatId', component: ChatView },
-    { path: '/transaction/comments/:albumId', component: CommentsView },
     { path: '/transaction/offer/:albumId', component: PriceOfferView },
-    { path: '/market/buy-order/:listingId', component: BuyOrderView },
     { path: '/transaction/offers/received', component: OffersView },
     { path: '/transaction/ongoing/:transactionId', component: OngoingTransactionView },
     { path: '/transaction/location/:transactionId', component: TransactionLocationView },
     { path: '/transaction/cancel/:transactionId', component: CancelTransactionView },
     { path: '/transaction/review/:transactionId', component: ReviewView },
-    { path: '/report/:type/:id', component: ReportView },
   ],
 });

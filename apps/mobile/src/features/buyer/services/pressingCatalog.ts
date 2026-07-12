@@ -3,11 +3,14 @@ import type { Album } from '@/shared/models/market';
 export interface PressingGroup {
   key: string;
   catalogNumber: string;
+  displayName: string;
   title: string;
   artist: string;
   year: number;
   releaseLabel: string;
   releaseCountry: string;
+  featureDescription: string;
+  featureTags: string[];
   coverImage: string;
   listingCount: number;
   lowestPrice: number;
@@ -62,6 +65,83 @@ const qualityMeta: Record<QualityBucketKey, { label: string; description: string
 };
 
 const gradeRank: Record<string, number> = { NM: 5, 'VG+': 4, VG: 3, 'G+': 2, G: 1 };
+
+const countryName = (value: unknown) => {
+  const text = compactText(value);
+  const normalized = text.toUpperCase();
+  const map: Record<string, string> = {
+    US: '미국반',
+    USA: '미국반',
+    UK: '영국반',
+    GB: '영국반',
+    JP: '일본반',
+    JAPAN: '일본반',
+    KR: '국내반',
+    KOREA: '국내반',
+    'SOUTH KOREA': '국내반',
+    DE: '독일반',
+    GERMANY: '독일반',
+    FR: '프랑스반',
+    FRANCE: '프랑스반',
+    EU: 'EU반',
+  };
+  return map[normalized] || (text ? `${text}반` : '');
+};
+
+const compactText = (value: unknown) => String(value || '').trim().replace(/\s+/g, ' ');
+const uniqueParts = (parts: string[]) => {
+  const seen = new Set<string>();
+  return parts.filter(part => {
+    const normalized = normalizeSearchValue(part);
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return true;
+  });
+};
+
+const pressingTextForAlbum = (album: Album) => {
+  const analysis = album.analysisReport || {};
+  const analysisPressing = typeof analysis.pressing === 'string' ? analysis.pressing : '';
+  return compactText(album.pressingCondition || analysisPressing);
+};
+
+const featureTagsForAlbum = (album: Album) => {
+  const source = [
+    pressingTextForAlbum(album),
+    album.genre,
+    ...(album.tags || []),
+  ].join(' ').toLocaleLowerCase('ko-KR');
+  const tags: string[] = [];
+  if (album.isFirstPress || /초반|first\s*press|firstpress|original/.test(source)) tags.push('초반');
+  if (album.isRare || /희귀|rare|limited|한정/.test(source)) tags.push('희귀');
+  if (/obi/.test(source)) tags.push('OBI 포함');
+  if (/promo|프로모|비매품/.test(source)) tags.push('프로모');
+  if (/mono|모노/.test(source)) tags.push('모노');
+  if (/reissue|리이슈|재발매/.test(source)) tags.push('리이슈');
+  if (/test pressing|테스트/.test(source)) tags.push('테스트 프레싱');
+  return tags;
+};
+
+const pressingFeatureParts = (representative: Album, listings: Album[]) => {
+  const country = countryName(representative.releaseCountry);
+  const label = compactText(representative.releaseLabel);
+  const year = representative.year ? `${representative.year}년` : '';
+  const pressingText = pressingTextForAlbum(representative);
+  const featureTags = uniqueParts(listings.flatMap(featureTagsForAlbum));
+  return uniqueParts([
+    country,
+    label,
+    year,
+    ...featureTags,
+    pressingText,
+  ]);
+};
+
+const pressingDisplayName = (representative: Album, listings: Album[]) => {
+  const coreParts = pressingFeatureParts(representative, listings).slice(0, 4);
+  if (coreParts.length) return coreParts.join(' · ');
+  return representative.isFirstPress ? '초반 추정 LP' : '일반 LP 판본';
+};
 
 export const pressingKeyForAlbum = (album: Album): string => {
   const catalog = normalizeCatalogValue(album.catalogNumber);
@@ -155,14 +235,22 @@ export function groupListingsByPressing(listings: Album[]): PressingGroup[] {
     const representative = sortedListings.find(item => item.discogsCoverImageUrl || item.images[0]) || sortedListings[0];
     const prices = priceRange(sortedListings);
     const qualityBuckets = qualityBucketsForListings(sortedListings);
+    const featureTags = pressingFeatureParts(representative, sortedListings);
+    const featureDescription = uniqueParts([
+      ...featureTags,
+      qualityBuckets[0]?.label || '',
+    ]).slice(0, 5).join(' · ');
     return {
       key,
-      catalogNumber: representative.catalogNumber.trim() || '카탈로그 번호 미상',
+      catalogNumber: representative.catalogNumber.trim(),
+      displayName: pressingDisplayName(representative, sortedListings),
       title: representative.title,
       artist: representative.artist,
       year: representative.year,
       releaseLabel: representative.releaseLabel || '',
       releaseCountry: representative.releaseCountry || '',
+      featureDescription: featureDescription || 'LP 특징 정보 확인',
+      featureTags,
       coverImage: representative.discogsCoverImageUrl || representative.images[0] || '',
       listingCount: sortedListings.length,
       lowestPrice: prices.lowestPrice,

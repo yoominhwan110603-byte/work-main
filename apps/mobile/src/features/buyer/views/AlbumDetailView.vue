@@ -1,10 +1,7 @@
 <template>
   <div v-if="album" class="size-full bg-white flex flex-col">
-    <header class="px-4 py-4 flex items-center justify-between border-b sticky top-0 bg-white z-10">
+    <header class="px-4 py-4 flex items-center border-b sticky top-0 bg-white z-10">
       <button class="p-2" @click="goBackOr(router, '/app')"><ArrowLeft :size="24" /></button>
-      <div class="flex gap-2">
-        <button class="p-2" aria-label="신고" @click="router.push(`/report/album/${album.id}`)"><Flag :size="22" /></button>
-      </div>
     </header>
 
     <div class="flex-1 overflow-y-auto">
@@ -26,18 +23,15 @@
             <h1 class="text-2xl mb-1">{{ album.title }}</h1>
             <p class="text-lg text-gray-600">{{ album.artist }}</p>
           </div>
-          <button v-if="showMarketplaceMetrics" class="p-2" aria-label="찜하기" @click="store.toggleFavorite(album.id)">
-            <Heart :size="28" :class="store.favorites.includes(album.id) ? 'fill-red-500 text-red-500' : 'text-gray-400'" />
-          </button>
           <button
             v-if="showMarketplaceMetrics"
-            :class="['rounded-full p-2', currentWishlistItem ? 'bg-blue-50' : '']"
-            aria-label="위시리스트 알림"
-            :aria-pressed="Boolean(currentWishlistItem)"
+            :class="['rounded-full p-2', isWishlisted ? 'bg-red-50' : '']"
+            aria-label="찜/위시 등록"
+            :aria-pressed="isWishlisted"
             :disabled="wishlistSaving"
             @click="toggleWishlist"
           >
-            <span :class="['block text-2xl leading-none', currentWishlistItem ? 'opacity-100' : 'opacity-45']" aria-hidden="true">🙏</span>
+            <Heart :size="28" :class="isWishlisted ? 'fill-red-500 text-red-500' : 'text-gray-400'" />
           </button>
         </div>
 
@@ -98,33 +92,11 @@
               <div class="rounded bg-white p-2"><p class="text-gray-500">하한가</p><p>{{ formatWon(marketEstimate.minPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">즉시 판매가</p><p>{{ formatWon(marketEstimate.instantSalePrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">구매 대기</p><p>{{ marketEstimate.metrics.buyOrderCount }}건</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">위시 대기</p><p>{{ wishlistCount }}명</p></div>
             </div>
             <p v-if="isOwnListing" class="rounded-lg bg-white p-2 text-xs text-gray-700">
               현재 {{ wishlistCount }}명이 이 LP를 위시리스트로 기다리고 있습니다.
             </p>
-            <div v-if="isOwnListing" class="rounded-lg bg-white p-3 text-xs text-gray-700">
-              <div class="mb-2 flex items-center justify-between gap-2">
-                <p class="font-medium text-gray-900">매칭 구매 대기</p>
-                <span class="text-blue-600">{{ matchesLoading ? '확인 중' : `${buyOrderMatches.length}건` }}</span>
-              </div>
-              <div v-if="buyOrderMatches.length" class="space-y-2">
-                <div v-for="order in buyOrderMatches.slice(0, 3)" :key="order.id" class="rounded border border-blue-100 bg-blue-50 p-2">
-                  <div class="flex items-center justify-between gap-2">
-                    <span>최대 구매가</span>
-                    <strong class="text-blue-700">{{ formatWon(order.maxPrice) }}</strong>
-                  </div>
-                  <p class="mt-1 text-gray-500">
-                    최소 {{ order.minMediaGrade }}/{{ order.minSleeveGrade }}
-                    <span v-if="order.regionPreference"> · {{ order.regionPreference }}</span>
-                    <span v-if="order.isFirstPressOnly"> · 초판만</span>
-                  </p>
-                </div>
-              </div>
-              <p v-else class="text-gray-500">조건이 맞는 구매 대기가 아직 없습니다.</p>
-            </div>
             <div v-if="isOwnListing && marketAdvice?.advice.length" class="space-y-2">
               <p v-for="item in marketAdvice.advice" :key="item.message" class="rounded-lg bg-white p-2 text-xs text-gray-700">
                 {{ item.message }}
@@ -219,27 +191,14 @@
       <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <ClipboardList :size="18" />제안
       </button>
-      <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push(`/transaction/comments/${album.id}`)">
-        <MessageCircle :size="18" />답변
-      </button>
-      <button class="py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
+      <button class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <MessageCircle :size="18" />채팅
-      </button>
-      <button
-        v-if="marketEstimate?.instantSaleAvailable"
-        class="col-span-2 py-3 bg-emerald-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm disabled:bg-gray-300"
-        :disabled="instantSelling"
-        @click="sellInstantly"
-      >
-        {{ instantSelling ? '즉시 판매 중' : `즉시 판매 ${formatWon(marketEstimate.instantSalePrice)}` }}
       </button>
       <button class="col-span-2 py-3 border border-red-300 text-red-600 rounded-lg flex items-center justify-center gap-1 text-sm" :disabled="isHidingListing" @click="hideCurrentListing">
         {{ isHidingListing ? '내리는 중' : '게시글 내리기' }}
       </button>
     </div>
     <div v-else class="border-t p-4 flex gap-3">
-      <button class="flex-1 py-3 border border-emerald-600 text-emerald-700 rounded-lg" @click="router.push(`/market/buy-order/${album.id}`)">구매 대기</button>
-      <button class="flex-1 py-3 border border-blue-600 text-blue-600 rounded-lg" @click="router.push(`/transaction/comments/${album.id}`)">문의하기</button>
       <button class="flex-1 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-2" @click="openSellerChat">
         <MessageCircle :size="20" />채팅하기
       </button>
@@ -251,15 +210,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, BadgeCheck, ClipboardList, Eye, Flag, Heart, MapPin, MessageCircle, Pencil, Play, Volume2 } from 'lucide-vue-next';
+import { ArrowLeft, BadgeCheck, ClipboardList, Eye, Heart, MapPin, MessageCircle, Pencil, Play, Volume2 } from 'lucide-vue-next';
 import { getActiveTrade } from '@/features/transaction/services/tradeState';
 import { useAppStore } from '@/shared/stores/appStore';
 import { findAlbumById } from '@/features/buyer/services/albumLookup';
 import { makeOneToOneChatId } from '@/features/transaction/services/chatClient';
 import { goBackOr } from '@/shared/services/navigation';
 import { resolveApiUrl } from '@/shared/services/api';
-import { addWishlistItem, fetchBuyOrderMatches, fetchMarketAdvice, fetchWishlist, instantSellListing, recordListingView, removeWishlistItem } from '@/shared/services/market';
-import type { BuyOrder, MarketAdviceResponse, WishlistItem } from '@/shared/models/market';
+import { fetchMarketAdvice, recordListingView } from '@/shared/services/market';
+import type { MarketAdviceResponse } from '@/shared/models/market';
 import VinylCover from '@/shared/components/VinylCover.vue';
 
 const route = useRoute();
@@ -271,10 +230,6 @@ const samplePlaying = ref<'good' | 'noisy' | null>(null);
 const isHidingListing = ref(false);
 const marketAdvice = ref<MarketAdviceResponse | null>(null);
 const marketLoading = ref(false);
-const instantSelling = ref(false);
-const buyOrderMatches = ref<BuyOrder[]>([]);
-const matchesLoading = ref(false);
-const wishlistItems = ref<WishlistItem[]>([]);
 const wishlistSaving = ref(false);
 let sampleAudio: HTMLAudioElement | null = null;
 const AUDIO_SAMPLE_PATH_PREFIX = '/audio-samples/';
@@ -306,16 +261,7 @@ const marketEstimate = computed(() => marketAdvice.value?.estimate || album.valu
 const formatWon = (value?: number | null) => typeof value === 'number' && value > 0 ? `${value.toLocaleString()}원` : '-';
 const formatSampleRecordedDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
 const wishlistCount = computed(() => album.value?.wishlistCount ?? marketEstimate.value?.metrics?.wishlistCount ?? 0);
-const currentWishlistItem = computed(() => {
-  const releaseId = album.value?.discogsReleaseId;
-  if (releaseId) {
-    const exact = wishlistItems.value.find(item => item.discogsReleaseId === releaseId);
-    if (exact) return exact;
-  }
-  const key = album.value?.marketKey || marketEstimate.value?.marketKey || album.value?.market?.marketKey || '';
-  if (!key) return null;
-  return wishlistItems.value.find(item => item.marketKey === key) || null;
-});
+const isWishlisted = computed(() => Boolean(album.value && store.isFavoriteAlbum(album.value)));
 const analysisReport = computed(() => album.value?.analysisReport as Record<string, unknown> | undefined);
 const recordSurface = computed(() => analysisReport.value?.recordSurface as { surfaceScore?: number; scratchCount?: number } | undefined);
 const jacketReport = computed(() => analysisReport.value?.jacket as { jacketGrade?: string; jacketScore?: number } | undefined);
@@ -354,77 +300,21 @@ const loadMarketAdvice = async () => {
     marketLoading.value = false;
   }
 };
-const loadBuyOrderMatches = async () => {
-  if (!album.value || !isOwnListing.value || matchesLoading.value) return;
-  matchesLoading.value = true;
-  try {
-    buyOrderMatches.value = (await fetchBuyOrderMatches(album.value.id)).matches;
-  } catch {
-    buyOrderMatches.value = [];
-  } finally {
-    matchesLoading.value = false;
-  }
-};
-const loadWishlist = async () => {
-  if (!store.isLoggedIn) return;
-  try {
-    wishlistItems.value = (await fetchWishlist()).wishlist;
-  } catch {
-    wishlistItems.value = [];
-  }
-};
 const toggleWishlist = async () => {
   if (!album.value || wishlistSaving.value) return;
   if (!store.isLoggedIn) {
-    alert('로그인 후 위시리스트 알림을 사용할 수 있습니다.');
+    alert('로그인 후 찜/위시를 사용할 수 있습니다.');
     return;
   }
   wishlistSaving.value = true;
   try {
-    const existing = currentWishlistItem.value;
-    if (existing) {
-      await removeWishlistItem(existing.id);
-      wishlistItems.value = wishlistItems.value.filter(item => item.id !== existing.id);
-    } else {
-      const result = await addWishlistItem({
-        listing_id: album.value.id,
-        market_key: album.value.marketKey || album.value.market?.marketKey,
-        title: album.value.title,
-        artist: album.value.artist,
-        catalog_number: album.value.catalogNumber,
-        discogs_release_id: album.value.discogsReleaseId || undefined,
-        cover_image_url: album.value.discogsCoverImageUrl || album.value.images[0],
-        release_label: album.value.releaseLabel,
-        release_country: album.value.releaseCountry,
-        year: album.value.year,
-        visibility: 'private',
-      });
-      wishlistItems.value = [result.wishlistItem, ...wishlistItems.value.filter(item => item.id !== result.wishlistItem.id)];
-      if (result.listing) store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing!.id)];
-    }
+    store.toggleFavorite(album.value);
   } catch (error) {
-    alert(error instanceof Error ? error.message : '위시리스트 처리에 실패했습니다.');
+    alert(error instanceof Error ? error.message : '찜/위시 처리에 실패했습니다.');
   } finally {
     wishlistSaving.value = false;
   }
 };
-const sellInstantly = async () => {
-  if (!album.value || instantSelling.value) return;
-  if (!confirm('가장 높은 구매 대기 가격으로 즉시 판매할까요?')) return;
-  instantSelling.value = true;
-  try {
-    const result = await instantSellListing(album.value.id, store.user.id);
-    store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing.id)];
-    alert(`${result.buyOrder.maxPrice.toLocaleString()}원 즉시 판매가 예약되었습니다.`);
-    await loadMarketAdvice();
-    await loadBuyOrderMatches();
-  } catch (error) {
-    alert(error instanceof Error ? error.message : '즉시 판매에 실패했습니다.');
-  } finally {
-    instantSelling.value = false;
-  }
-};
-
 const sampleItems = computed<SampleItem[]>(() => {
   const samples = album.value?.audioSamples || {};
   const goodStart = Number(samples.good?.startSeconds || 0);
@@ -475,8 +365,7 @@ onMounted(async () => {
       })
       .catch(() => undefined);
     void loadMarketAdvice();
-    void loadBuyOrderMatches();
-    void loadWishlist();
+    void store.loadWishlistFavorites();
   }
 });
 

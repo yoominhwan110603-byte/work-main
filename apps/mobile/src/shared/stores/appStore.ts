@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia';
 import { Capacitor, registerPlugin } from '@capacitor/core';
-import { mockAlbums, type Album, type MarketPriceEstimate } from '@/shared/models/market';
+import { mockAlbums, type Album, type MarketPriceEstimate, type WishlistItem } from '@/shared/models/market';
 import { mockCollections, type CollectionCreatePayload, type VinylCollection } from '@/shared/models/collection';
 import { fetchApi, getApiBaseUrl } from '@/shared/services/api';
-import { normalizeMarketEstimate, recordListingFavorite } from '@/shared/services/market';
+import { addWishlistItem, fetchWishlist, normalizeMarketEstimate, recordListingFavorite, removeWishlistItem } from '@/shared/services/market';
 
 export interface User {
   id: string;
@@ -93,6 +93,7 @@ interface ListingCreatePayload {
   discogs_cover_image_url?: string;
   release_label?: string;
   release_country?: string;
+  pressing_condition?: string;
   price: number;
   description?: string;
   tags?: string[];
@@ -281,11 +282,48 @@ async function readListingFailure(response: Response) {
   return { message: String(detail || payload.message || '게시글 저장에 실패했습니다.'), priceEstimate: undefined as MarketPriceEstimate | undefined };
 }
 
+function wishlistMatchesAlbum(item: WishlistItem, album: Album) {
+  if (item.listingId && String(item.listingId) === String(album.id)) return true;
+  if (item.discogsReleaseId && album.discogsReleaseId && Number(item.discogsReleaseId) === Number(album.discogsReleaseId)) return true;
+
+  const albumMarketKeys = [album.marketKey, album.market?.marketKey].filter(Boolean).map(String);
+  if (item.marketKey && albumMarketKeys.includes(String(item.marketKey))) return true;
+
+  const itemCatalog = item.catalogNumber?.trim().toLocaleLowerCase('ko-KR');
+  const albumCatalog = album.catalogNumber?.trim().toLocaleLowerCase('ko-KR');
+  if (itemCatalog && albumCatalog && itemCatalog === albumCatalog) {
+    const itemTitle = item.title?.trim().toLocaleLowerCase('ko-KR');
+    const albumTitle = album.title?.trim().toLocaleLowerCase('ko-KR');
+    return !itemTitle || !albumTitle || itemTitle === albumTitle;
+  }
+
+  return false;
+}
+
+function wishlistPayloadFromAlbum(album: Album) {
+  return {
+    listing_id: album.id,
+    market_key: album.marketKey || album.market?.marketKey,
+    title: album.title,
+    artist: album.artist,
+    catalog_number: album.catalogNumber,
+    discogs_release_id: album.discogsReleaseId || undefined,
+    cover_image_url: album.discogsCoverImageUrl || album.images[0],
+    release_label: album.releaseLabel,
+    release_country: album.releaseCountry,
+    year: album.year,
+    visibility: 'private' as const,
+  };
+}
+
 export const useAppStore = defineStore('app', {
   state: () => ({
     user: sanitizeUser(readStoredAuth<User>(USER_KEY, defaultUser)),
     token: readStoredToken(),
     favorites: readJson<string[]>(FAVORITES_KEY, []),
+    wishlistItems: [] as WishlistItem[],
+    wishlistLoaded: false,
+    wishlistLoading: false,
     listings: mergeWithMockAlbums([]) as Album[],
     unreadNotificationCount: 0,
     collections: mergeWithMockCollections(readJson<VinylCollection[]>(COLLECTIONS_KEY, [])) as VinylCollection[],
@@ -294,11 +332,20 @@ export const useAppStore = defineStore('app', {
   }),
   getters: {
     isLoggedIn: state => Boolean(state.token && state.user.id !== 'guest'),
+    isFavoriteAlbum: state => (albumOrId: Album | string) => {
+      const album = typeof albumOrId === 'string'
+        ? state.listings.find(item => String(item.id) === String(albumOrId))
+        : albumOrId;
+      const albumId = typeof albumOrId === 'string' ? String(albumOrId) : String(albumOrId.id);
+      return state.favorites.includes(albumId) || Boolean(album && state.wishlistItems.some(item => wishlistMatchesAlbum(item, album)));
+    },
   },
   actions: {
     persistAuth(user: User, token = 'local-dev-token', rememberMe = true) {
       this.user = sanitizeUser(user);
       this.token = token;
+      this.wishlistItems = [];
+      this.wishlistLoaded = false;
       const primaryStorage = rememberMe ? localStorage : sessionStorage;
       const secondaryStorage = rememberMe ? sessionStorage : localStorage;
       secondaryStorage.removeItem(USER_KEY);
@@ -357,6 +404,8 @@ export const useAppStore = defineStore('app', {
       void fetchApi('/auth/logout', { method: 'POST' }).catch(() => undefined);
       this.user = defaultUser;
       this.token = '';
+      this.wishlistItems = [];
+      this.wishlistLoaded = false;
       localStorage.removeItem(USER_KEY);
       localStorage.removeItem(AUTH_TOKEN_KEY);
       sessionStorage.removeItem(USER_KEY);
@@ -454,18 +503,72 @@ export const useAppStore = defineStore('app', {
       localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
       applyTheme(this.settings.theme);
     },
-    toggleFavorite(albumId: string) {
-      const normalizedId = String(albumId);
-      const isAdding = !this.favorites.includes(normalizedId);
+    persistFavorites() {
+      localStorage.setItem(FAVORITES_KEY, JSON.stringify(this.favorites));
+    },
+    findWishlistItemForAlbum(album: Album) {
+      return this.wishlistItems.find(item => wishlistMatchesAlbum(item, album)) || null;
+    },
+    async loadWishlistFavorites(force = false) {
+      if (!this.isLoggedIn) {
+        this.wishlistItems = [];
+        this.wishlistLoaded = true;
+        return this.wishlistItems;
+      }
+      if (this.wishlistLoading || (this.wishlistLoaded && !force)) return this.wishlistItems;
+
+      this.wishlistLoading = true;
+      try {
+        const result = await fetchWishlist();
+        this.wishlistItems = result.wishlist || [];
+        const wishlistListingIds = this.wishlistItems
+          .map(item => item.listingId ? String(item.listingId) : '')
+          .filter(Boolean);
+        if (wishlistListingIds.length) {
+          this.favorites = Array.from(new Set([...this.favorites, ...wishlistListingIds]));
+          this.persistFavorites();
+        }
+      } catch {
+        // Keep the local favorite list usable while offline or when the API is unavailable.
+      } finally {
+        this.wishlistLoaded = true;
+        this.wishlistLoading = false;
+      }
+      return this.wishlistItems;
+    },
+    toggleFavorite(albumOrId: Album | string) {
+      const album = typeof albumOrId === 'string'
+        ? this.listings.find(item => String(item.id) === String(albumOrId))
+        : albumOrId;
+      const normalizedId = typeof albumOrId === 'string' ? String(albumOrId) : String(albumOrId.id);
+      const existingWishlistItem = album ? this.findWishlistItemForAlbum(album) : null;
+      const isAdding = !this.favorites.includes(normalizedId) && !existingWishlistItem;
+
       this.favorites = isAdding
         ? [...this.favorites, normalizedId]
         : this.favorites.filter(id => id !== normalizedId);
-      localStorage.setItem(FAVORITES_KEY, JSON.stringify(this.favorites));
+      this.persistFavorites();
       void recordListingFavorite(normalizedId, isAdding ? 1 : -1)
         .then(result => {
           if (result.listing) this.listings = [result.listing, ...this.listings.filter(album => album.id !== result.listing.id)];
         })
         .catch(() => undefined);
+
+      if (!album || !this.isLoggedIn) return;
+      void (async () => {
+        if (!this.wishlistLoaded) await this.loadWishlistFavorites();
+        const serverWishlistItem = this.findWishlistItemForAlbum(album);
+        if (isAdding && !serverWishlistItem) {
+          const result = await addWishlistItem(wishlistPayloadFromAlbum(album));
+          this.wishlistItems = [result.wishlistItem, ...this.wishlistItems.filter(item => item.id !== result.wishlistItem.id)];
+          if (result.listing) this.listings = [result.listing, ...this.listings.filter(item => item.id !== result.listing!.id)];
+          return;
+        }
+        if (!isAdding && serverWishlistItem) {
+          await removeWishlistItem(serverWishlistItem.id);
+          this.wishlistItems = this.wishlistItems.filter(item => item.id !== serverWishlistItem.id);
+        }
+      })().catch(() => undefined);
     },
     persistCollections() {
       const localCollections = this.collections.filter(collection => !mockCollectionIds.has(collection.id));
@@ -479,7 +582,7 @@ export const useAppStore = defineStore('app', {
         if (!response.ok) return { ok: false, collections: this.collections };
         const serverCollections = (data.collections || []).map(collection => ({
           ...collection,
-          ownershipStatus: collection.ownershipStatus || 'owned' as const,
+          ownershipStatus: 'owned' as const,
         }));
         const local = this.collections.filter(collection => !mockCollectionIds.has(collection.id));
         this.collections = mergeWithMockCollections([...local, ...serverCollections]);
@@ -493,6 +596,7 @@ export const useAppStore = defineStore('app', {
       const now = new Date().toISOString();
       const collection: VinylCollection = {
         ...payload,
+        ownershipStatus: 'owned',
         id: `collection-${Date.now()}`,
         owner: {
           id: this.user.id,
@@ -549,7 +653,7 @@ export const useAppStore = defineStore('app', {
     updateCollection(collectionId: string, updates: Partial<CollectionCreatePayload>) {
       const collection = this.collections.find(item => item.id === collectionId);
       if (!collection || collection.owner.id !== this.user.id) return { ok: false, message: '수정할 컬렉션을 찾을 수 없습니다.' };
-      const nextCollection = { ...collection, ...updates, updatedAt: new Date().toISOString() };
+      const nextCollection = { ...collection, ...updates, ownershipStatus: 'owned' as const, updatedAt: new Date().toISOString() };
       this.collections = this.collections.map(item => item.id === collectionId ? nextCollection : item);
       this.persistCollections();
       return { ok: true, collection: nextCollection, message: '컬렉션이 저장되었습니다.' };

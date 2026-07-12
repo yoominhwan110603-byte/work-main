@@ -6,8 +6,8 @@
           <ArrowLeft :size="24" />
         </button>
         <div class="min-w-0 flex-1">
-          <h1 class="truncate text-lg font-semibold">{{ group?.catalogNumber || '카탈로그 매물' }}</h1>
-          <p class="truncate text-xs text-gray-500">해당 카탈로그 번호의 판매 매물</p>
+          <h1 class="truncate text-lg font-semibold">{{ group?.displayName || 'LP 판본 매물' }}</h1>
+          <p class="truncate text-xs text-gray-500">해당 LP 특징의 판매 매물</p>
         </div>
       </div>
     </header>
@@ -20,9 +20,9 @@
             <h2 class="truncate text-lg font-medium">{{ group.title }}</h2>
             <p class="truncate text-sm text-gray-600">{{ group.artist }}</p>
             <div class="mt-2 inline-flex max-w-full rounded-md bg-blue-100 px-2.5 py-1 text-sm font-semibold text-blue-700">
-              <span class="truncate">{{ group.catalogNumber }}</span>
+              <span class="truncate">{{ group.displayName }}</span>
             </div>
-            <p class="mt-1 text-xs text-gray-500">{{ releaseDescription }}</p>
+            <p class="mt-1 text-xs text-gray-500">{{ group.featureDescription }}</p>
           </div>
         </div>
       </section>
@@ -65,14 +65,14 @@
             v-for="album in sortedListings"
             :key="album.id"
             :album="album"
-            :favorite="store.favorites.includes(album.id)"
-            @toggle="store.toggleFavorite(album.id)"
+            :favorite="store.isFavoriteAlbum(album)"
+            @toggle="store.toggleFavorite(album)"
           />
         </div>
       </section>
 
       <div v-else class="px-4 py-16 text-center text-sm text-gray-500">
-        해당 카탈로그 번호의 판매 매물을 찾을 수 없습니다.
+        해당 LP 판본의 판매 매물을 찾을 수 없습니다.
       </div>
     </div>
   </div>
@@ -96,9 +96,6 @@ const activeQuality = ref('');
 const groupKey = computed(() => String(route.query.key || ''));
 const group = computed(() => groupListingsByPressing(store.listings).find(item => item.key === groupKey.value));
 const qualityBuckets = computed(() => group.value?.qualityBuckets || []);
-const releaseDescription = computed(() => group.value
-  ? [group.value.releaseLabel, group.value.releaseCountry, group.value.year ? `${group.value.year}년` : ''].filter(Boolean).join(' · ') || '판본 상세 정보 확인'
-  : '');
 const qualityFilteredListings = computed(() => {
   const listings = group.value?.listings || [];
   if (!activeQuality.value) return listings;
@@ -112,6 +109,7 @@ const sortedListings = computed(() => [...qualityFilteredListings.value].sort((l
 
 onMounted(async () => {
   if (!group.value) await store.loadListingsFromServer();
+  void store.loadWishlistFavorites();
 });
 
 watch(groupKey, () => {

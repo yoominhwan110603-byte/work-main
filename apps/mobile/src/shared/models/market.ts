@@ -1,6 +1,5 @@
 export interface MarketMetrics {
   listingCount: number;
-  buyOrderCount: number;
   favoriteCount: number;
   wishlistCount?: number;
   viewCount: number;
@@ -13,29 +12,11 @@ export interface MarketPriceEstimate {
   minPrice: number;
   maxPrice: number;
   recommendedPrice: number;
-  instantSalePrice: number;
-  instantSaleAvailable: boolean;
   sellerPrice: number;
   isValidPrice: boolean;
   priceStatus: 'below_range' | 'within_range' | 'above_range' | string;
   metrics: MarketMetrics;
   reason?: string;
-}
-
-export interface BuyOrder {
-  id: string;
-  buyerId: string;
-  listingId?: string | null;
-  marketKey: string;
-  maxPrice: number;
-  minMediaGrade: string;
-  minSleeveGrade: string;
-  pressingCondition?: string | null;
-  isFirstPressOnly: boolean;
-  regionPreference?: string | null;
-  status: string;
-  createdAt: string;
-  updatedAt?: string | null;
 }
 
 export interface MarketAdviceItem {
@@ -81,6 +62,7 @@ export interface Album {
   discogsCoverImageUrl?: string;
   releaseLabel?: string;
   releaseCountry?: string;
+  pressingCondition?: string | null;
   price: number;
   priceRange: { min: number; max: number };
   audioGrade: string;
@@ -113,14 +95,12 @@ export interface Album {
   status?: 'published' | 'hidden' | 'reserved' | 'sold' | string;
   viewCount?: number;
   favoriteCount?: number;
-  buyOrderCount?: number;
   wishlistCount?: number;
   marketKey?: string;
   basePrice?: number;
   minPrice?: number;
   maxPrice?: number;
   recommendedPrice?: number;
-  instantSalePrice?: number;
   sellerPrice?: number;
   market?: MarketPriceEstimate;
 }
@@ -168,7 +148,6 @@ export const mockAlbums: Album[] = [
     jacketScore: 76,
     isRare: true,
     isFirstPress: true,
-    instantSalePrice: 89000,
     images: [mockCover('#1f2937', '#2563eb', 'Kind of Blue', 'Miles Davis')],
     description: 'Columbia 6-Eye 라벨 매물입니다. 표면 헤어라인은 있으나 재생 잡음은 낮은 편입니다.',
     tags: ['Miles Davis', 'Columbia', '6-Eye', '초판', '재즈', 'LP'],
@@ -193,7 +172,6 @@ export const mockAlbums: Album[] = [
     jacketScore: 90,
     isRare: false,
     isFirstPress: false,
-    instantSalePrice: 65000,
     images: [mockCover('#0f766e', '#f59e0b', 'Blue Train', 'John Coltrane')],
     description: 'Blue Note Classic Series 재발매반입니다. 세척 후 1회 재생했고 재킷 모서리 상태가 좋습니다.',
     tags: ['John Coltrane', 'Blue Note', 'Classic', '재즈', 'LP'],
@@ -242,7 +220,6 @@ export const mockAlbums: Album[] = [
     jacketScore: 84,
     isRare: true,
     isFirstPress: false,
-    instantSalePrice: 54000,
     images: [mockCover('#365314', '#84cc16', 'Abbey Road', 'Japan Press')],
     description: '일본반 OBI 포함 매물입니다. 재킷 보존 상태가 좋고 판 휨은 확인되지 않았습니다.',
     tags: ['The Beatles', 'Japan Press', 'OBI', '록', 'LP'],

@@ -113,20 +113,9 @@
 
       <section class="space-y-3 rounded-lg border bg-white p-3">
         <h2 class="text-base font-medium">상태와 메모</h2>
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label class="mb-2 block text-sm">보유 상태</label>
-            <select v-model="form.ownershipStatus" class="w-full rounded-lg border bg-white px-4 py-3">
-              <option value="owned">보유 중</option>
-              <option value="reserved">판매 예약</option>
-              <option value="lent">대여 중</option>
-              <option value="sold">판매 완료</option>
-            </select>
-          </div>
-          <div>
-            <label class="mb-2 block text-sm">구매 가격</label>
-            <input v-model="form.purchasePrice" type="number" inputmode="numeric" min="0" class="w-full rounded-lg border px-4 py-3" placeholder="원 단위" />
-          </div>
+        <div>
+          <label class="mb-2 block text-sm">구매 가격</label>
+          <input v-model="form.purchasePrice" type="number" inputmode="numeric" min="0" class="w-full rounded-lg border px-4 py-3" placeholder="원 단위" />
         </div>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
@@ -205,7 +194,7 @@ const noisySample = ref<CollectionAudioSample | null>(null);
 const form = reactive({
   title: '', artist: '', catalogNumber: '', discogsReleaseId: 0, discogsCoverImageUrl: '',
   releaseLabel: '', releaseCountry: '', pressingInfo: '', year: '', genre: '',
-  ownershipStatus: 'owned' as CollectionCreatePayload['ownershipStatus'], purchasePrice: '',
+  purchasePrice: '',
   visibility: 'public' as CollectionCreatePayload['visibility'], audioGrade: '', audioScore: '',
   isRare: false, isFirstPress: false, notes: '', tags: '',
 });
@@ -313,7 +302,7 @@ const saveCollection = async () => {
     genre: form.genre.trim() || '기타', catalogNumber: form.catalogNumber.trim(),
     discogsReleaseId: form.discogsReleaseId, discogsCoverImageUrl: form.discogsCoverImageUrl,
     releaseLabel: form.releaseLabel || undefined, releaseCountry: form.releaseCountry || undefined,
-    pressingInfo: form.pressingInfo || undefined, ownershipStatus: form.ownershipStatus,
+    pressingInfo: form.pressingInfo || undefined, ownershipStatus: 'owned',
     purchasePrice: Number(form.purchasePrice) || undefined, notes: form.notes.trim() || '개인 컬렉션 메모입니다.',
     tags: tagList(), images: [form.discogsCoverImageUrl, recordImage.value].filter(Boolean),
     coverImageDataUrl: undefined, recordImageDataUrl: recordImage.value || undefined,
@@ -346,7 +335,7 @@ onMounted(() => {
     discogsReleaseId: collection.discogsReleaseId || 0, discogsCoverImageUrl: collection.discogsCoverImageUrl || '',
     releaseLabel: collection.releaseLabel || '', releaseCountry: collection.releaseCountry || '',
     pressingInfo: collection.pressingInfo || '', year: collection.year ? String(collection.year) : '',
-    genre: collection.genre, ownershipStatus: collection.ownershipStatus || 'owned',
+    genre: collection.genre,
     purchasePrice: collection.purchasePrice ? String(collection.purchasePrice) : '', visibility: collection.visibility,
     audioGrade: collection.audioGrade || '', audioScore: collection.audioScore ? String(collection.audioScore) : '',
     isRare: collection.isRare, isFirstPress: collection.isFirstPress, notes: collection.notes, tags: collection.tags.join(' '),

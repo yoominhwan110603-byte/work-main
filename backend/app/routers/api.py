@@ -421,7 +421,7 @@ def text_has_rarity_hint(value: str) -> bool:
 
 
 def listing_is_first_press(item: dict[str, Any], analysis_report: dict[str, Any] | None = None) -> bool:
-    pressing = str(item.get("pressing") or (analysis_report or {}).get("pressing") or "")
+    pressing = str(item.get("pressing") or item.get("pressing_condition") or item.get("pressingCondition") or (analysis_report or {}).get("pressing") or "")
     pressing_lower = pressing.lower()
     return bool(
         item.get("is_first_press")
@@ -435,7 +435,7 @@ def listing_is_rare(item: dict[str, Any], tags: list[str] | None = None, analysi
     if item.get("is_rare") or item.get("isRare") or item.get("is_first_press") or item.get("isFirstPress"):
         return True
     tag_text = " ".join(tags if tags is not None else clean_tags(item.get("tags")))
-    pressing = str(item.get("pressing") or (analysis_report or {}).get("pressing") or "")
+    pressing = str(item.get("pressing") or item.get("pressing_condition") or item.get("pressingCondition") or (analysis_report or {}).get("pressing") or "")
     return text_has_rarity_hint(f"{tag_text} {pressing}")
 
 
@@ -646,6 +646,7 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
         "discogsCoverImageUrl": item.get("discogs_cover_image_url") or item.get("discogsCoverImageUrl") or "",
         "releaseLabel": item.get("release_label") or item.get("releaseLabel") or "",
         "releaseCountry": item.get("release_country") or item.get("releaseCountry") or "",
+        "pressingCondition": item.get("pressing_condition") or item.get("pressingCondition") or analysis_report.get("pressing"),
         "price": price,
         "priceRange": {"min": min_price, "max": max_price},
         "audioGrade": item.get("audio_grade") or item.get("audioGrade") or "VG",
@@ -1529,10 +1530,20 @@ def find_raw_listing(listing_id: str, listings: list[dict[str, Any]] | None = No
     return next((item for item in MOCK_LISTINGS if str(item.get("id")) == str(listing_id)), None)
 
 
-def compact_buy_order(order: dict[str, Any]) -> dict[str, Any]:
+def buy_order_buyer_alias(order: dict[str, Any], users: dict[str, Any] | None = None) -> str:
+    buyer_id = str(order.get("buyer_id") or order.get("buyerId") or "")
+    user = users.get(buyer_id, {}) if isinstance(users, dict) else {}
+    username = str(order.get("buyer_name") or order.get("buyerName") or user.get("username") or "").strip()
+    if username:
+        return mask_username(username)
+    return f"구매자 {buyer_id[-4:]}" if buyer_id else "구매자"
+
+
+def compact_buy_order(order: dict[str, Any], users: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": str(order.get("id") or ""),
         "buyerId": str(order.get("buyer_id") or order.get("buyerId") or ""),
+        "buyerAlias": buy_order_buyer_alias(order, users),
         "listingId": order.get("listing_id") or order.get("listingId"),
         "marketKey": str(order.get("market_key") or order.get("marketKey") or ""),
         "maxPrice": int(order.get("max_price") or order.get("maxPrice") or 0),
@@ -1618,11 +1629,12 @@ async def create_buy_order(payload: BuyOrderCreate):
         write_json(LISTINGS_PATH, listings)
         updated_listing = listing_to_album(listing)
     matches = find_matching_buy_orders(listing, buy_orders) if listing else []
+    users = read_json(USERS_PATH, {})
     return {
         "status": "ok",
         "persisted": True,
-        "buyOrder": compact_buy_order(order),
-        "matches": [compact_buy_order(item) for item in matches],
+        "buyOrder": compact_buy_order(order, users),
+        "matches": [compact_buy_order(item, users) for item in matches],
         "listing": updated_listing,
     }
 
@@ -1633,10 +1645,11 @@ async def get_buy_order_matches(listing_id: str):
     if not listing:
         raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
     matches = find_matching_buy_orders(listing, read_list(BUY_ORDERS_PATH))
+    users = read_json(USERS_PATH, {})
     return {
         "listingId": listing_id,
         "marketKey": normalize_market_key(listing),
-        "matches": [compact_buy_order(item) for item in matches],
+        "matches": [compact_buy_order(item, users) for item in matches],
         "instantSalePrice": calculate_instant_sale_price(listing, matches),
     }
 
@@ -1713,7 +1726,7 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
     return {
         "status": "ok",
         "listing": listing_to_album(listing),
-        "buyOrder": compact_buy_order(order),
+        "buyOrder": compact_buy_order(order, read_json(USERS_PATH, {})),
         "transaction": transaction,
         "priceHistory": history_item,
     }
@@ -1985,7 +1998,7 @@ def normalize_collection(item: dict[str, Any]) -> dict[str, Any]:
     normalized["id"] = str(item.get("id") or f"collection-{uuid4().hex[:10]}")
     normalized["owner"] = item.get("owner") or collection_owner(owner_id)
     normalized["ownerId"] = owner_id
-    normalized["ownershipStatus"] = str(item.get("ownershipStatus") or "owned")
+    normalized["ownershipStatus"] = "owned"
     normalized["visibility"] = "private" if item.get("visibility") == "private" else "public"
     normalized["contactCount"] = int(item.get("contactCount") or 0)
     normalized["createdAt"] = str(item.get("createdAt") or now_iso())
@@ -2055,6 +2068,7 @@ async def create_collection(payload: CollectionCreate, user_id: Annotated[str, D
         raise HTTPException(status_code=400, detail="Discogs 발매반과 커버 이미지를 선택해 주세요.")
     item["coverImageDataUrl"] = None
     item["images"] = [image for image in (item["discogsCoverImageUrl"], item.get("recordImageDataUrl")) if image]
+    item["ownershipStatus"] = "owned"
     item.update({
         "id": f"collection-{uuid4().hex[:10]}",
         "ownerId": user_id,
@@ -2088,6 +2102,7 @@ async def update_collection(
             raise HTTPException(status_code=400, detail="Discogs 발매반과 커버 이미지를 선택해 주세요.")
         updates["coverImageDataUrl"] = None
         updates["images"] = [image for image in (updates["discogsCoverImageUrl"], updates.get("recordImageDataUrl")) if image]
+        updates["ownershipStatus"] = "owned"
         item.update(updates)
         item.update(preserved)
         item["updatedAt"] = now_iso()

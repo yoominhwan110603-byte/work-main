@@ -15,9 +15,9 @@
         </div>
 
         <div class="mt-2 inline-flex max-w-full items-center rounded-md bg-blue-50 px-2.5 py-1 text-sm font-semibold text-blue-700">
-          <span class="truncate">{{ group.catalogNumber }}</span>
+          <span class="truncate">{{ group.displayName }}</span>
         </div>
-        <p class="mt-1 truncate text-xs text-gray-500">{{ pressingDescription }}</p>
+        <p class="mt-1 truncate text-xs text-gray-500">{{ group.featureDescription }}</p>
         <div class="mt-2 flex flex-wrap gap-1.5">
           <span
             v-for="bucket in group.qualityBuckets.slice(0, 3)"
@@ -46,12 +46,6 @@ import VinylCover from './VinylCover.vue';
 
 const props = defineProps<{ group: PressingGroup }>();
 const router = useRouter();
-
-const pressingDescription = computed(() => [
-  props.group.releaseLabel,
-  props.group.releaseCountry,
-  props.group.year ? `${props.group.year}년` : '',
-].filter(Boolean).join(' · ') || '판본 상세 정보 확인');
 
 const priceLabel = computed(() => props.group.lowestPrice
   ? `${props.group.lowestPrice.toLocaleString()}원부터`

@@ -109,10 +109,6 @@
             <p class="text-xs text-gray-500">추천 판매가</p>
             <p class="mt-1">{{ formatWon(marketEstimate.recommendedPrice) }}</p>
           </div>
-          <div class="rounded-lg bg-emerald-50 p-3">
-            <p class="text-xs text-emerald-700">즉시 판매가</p>
-            <p class="mt-1">{{ formatWon(marketEstimate.instantSalePrice) }}</p>
-          </div>
           <div class="rounded-lg bg-indigo-50 p-3">
             <p class="text-xs text-indigo-700">위시 대기</p>
             <p class="mt-1">{{ marketEstimate.metrics.wishlistCount || 0 }}명</p>

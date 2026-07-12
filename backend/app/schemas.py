@@ -63,6 +63,7 @@ class ListingCreate(BaseModel):
     discogs_cover_image_url: str | None = None
     release_label: str | None = None
     release_country: str | None = None
+    pressing_condition: str | None = None
     price: int
     description: str | None = None
     tags: list[str] = []

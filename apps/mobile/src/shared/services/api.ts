@@ -1,12 +1,13 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
-const DEFAULT_LAN_API_BASE_URL = 'http://172.30.13.172:8000';
+const DEFAULT_LAN_API_BASE_URL = 'http://192.168.219.115:8000';
 const FALLBACK_LAN_API_BASE_URLS = [
+  'http://192.168.219.115:8000',
+  'http://172.30.14.95:8000',
   'http://172.30.13.172:8000',
   'http://172.30.1.67:8000',
   'http://192.168.219.112:8000',
   'http://192.168.219.113:8000',
-  'http://172.30.14.95:8000',
 ];
 const API_OVERRIDE_KEY = 'vinyl-check-api-base-url';
 const AUTH_TOKEN_KEY = 'vinyl-check-auth-token';

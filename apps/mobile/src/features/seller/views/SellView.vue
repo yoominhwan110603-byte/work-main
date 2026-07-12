@@ -270,8 +270,6 @@
               <div class="rounded bg-white p-2"><p class="text-gray-500">하한가</p><p>{{ formatWon(marketEstimate.minPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">즉시 판매가</p><p>{{ formatWon(marketEstimate.instantSalePrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">구매 대기</p><p>{{ marketEstimate.metrics.buyOrderCount }}건</p></div>
               <div class="rounded bg-white p-2"><p class="text-gray-500">위시 대기</p><p>{{ marketEstimate.metrics.wishlistCount || 0 }}명</p></div>
             </div>
             <div v-if="marketEstimate" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1501,6 +1499,7 @@ const publishListingAction = async () => {
     discogs_cover_image_url: selectedCandidate.value?.coverImageUrl,
     release_label: selectedCandidate.value?.label,
     release_country: selectedCandidate.value?.country,
+    pressing_condition: form.pressing.trim(),
     year: selectedCandidate.value?.year,
     price: Number(form.price),
     description: form.description.trim(),
