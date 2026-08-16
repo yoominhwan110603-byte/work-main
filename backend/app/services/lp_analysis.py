@@ -74,10 +74,8 @@ def analyze_record_surface_image(content: bytes, content_type: str | None = None
         "low": sum(1 for candidate in scratch_candidates if candidate.severity == "low"),
     }
     scratch_count = len(scratch_candidates)
-    scratch_risk = _scratch_risk(scratch_count, severity_counts, scratch_density)
 
     reflection_ratio = float(np.count_nonzero(reflection_mask)) / float(height * width)
-    reflection_risk = _risk_label(reflection_ratio, 0.025, 0.07)
     quality_penalty = _quality_penalty(blur_variance, exposure, disc.detected)
     surface_score = _surface_score(
         scratch_count=scratch_count,
@@ -88,17 +86,20 @@ def analyze_record_surface_image(content: bytes, content_type: str | None = None
         quality_penalty=quality_penalty,
     )
     confidence = _confidence(surface_score, disc, blur_variance, exposure, mask_pixels / float(height * width))
+    surface_grade = _grade_from_score(surface_score)
 
     return {
         "isRecord": True,
+        "analysisAvailable": True,
         "confidence": confidence,
-        "signals": _signals(scratch_count, scratch_risk, reflection_risk, disc.detected, quality_penalty),
+        "signals": _signals(scratch_count, surface_score, surface_grade, disc.detected, quality_penalty),
         "source": "opencv",
         "persisted": False,
         "surfaceScore": surface_score,
+        "surfaceGrade": surface_grade,
         "scratchCount": scratch_count,
-        "scratchRisk": scratch_risk,
-        "reflectionRisk": reflection_risk,
+        "scratchRisk": None,
+        "reflectionRisk": None,
         "scratchRegions": scratch_regions,
         "scratchDetails": {
             "displayedRegions": len(scratch_regions),
@@ -120,7 +121,7 @@ def analyze_record_surface_image(content: bytes, content_type: str | None = None
             "analysisMaskRatio": round(mask_pixels / float(height * width), 4),
         },
         "dustOrReflectionNote": "강한 조명 반사, 중앙 라벨/홀, 원판 바깥 배경은 스크래치 후보에서 제외했습니다. 먼지와 얕은 홈 자국은 실제 판매 전 육안 확인을 함께 권장합니다.",
-        "playbackImpact": _playback_impact(scratch_risk, reflection_risk),
+        "playbackImpact": None,
     }
 
 
@@ -579,22 +580,19 @@ def _is_duplicate_line(candidate: ScratchCandidate, accepted: list[ScratchCandid
     return False
 
 
+def _normalized_coordinate(value: int, limit: int) -> float:
+    ratio = float(value) / float(max(1, limit))
+    return round(max(0.0, min(1.0, ratio)), 4)
+
+
 def _region_payload(candidate: ScratchCandidate, width: int, height: int) -> dict[str, Any]:
     return {
-        "x1": round(candidate.x1 / width, 4),
-        "y1": round(candidate.y1 / height, 4),
-        "x2": round(candidate.x2 / width, 4),
-        "y2": round(candidate.y2 / height, 4),
+        "x1": _normalized_coordinate(candidate.x1, width),
+        "y1": _normalized_coordinate(candidate.y1, height),
+        "x2": _normalized_coordinate(candidate.x2, width),
+        "y2": _normalized_coordinate(candidate.y2, height),
         "severity": candidate.severity,
     }
-
-
-def _scratch_risk(scratch_count: int, severity_counts: dict[str, int], scratch_density: float) -> str:
-    if severity_counts["high"] >= 2 or scratch_count >= 9 or scratch_density >= 0.028:
-        return "high"
-    if severity_counts["high"] >= 1 or severity_counts["medium"] >= 2 or scratch_count >= 3 or scratch_density >= 0.014:
-        return "medium"
-    return "low"
 
 
 def _surface_score(
@@ -612,6 +610,22 @@ def _surface_score(
     score -= min(8.0, dust_ratio * 120.0)
     score -= quality_penalty
     return int(max(42, min(94, round(score))))
+
+
+def _grade_from_score(score: int) -> str:
+    if score >= 96:
+        return "M"
+    if score >= 88:
+        return "NM"
+    if score >= 80:
+        return "EX"
+    if score >= 70:
+        return "VG+"
+    if score >= 58:
+        return "VG"
+    if score >= 45:
+        return "G"
+    return "P"
 
 
 def _quality_penalty(blur_variance: float, exposure: float, detected_disc: bool) -> int:
@@ -649,15 +663,15 @@ def _confidence(surface_score: int, disc: DiscCandidate, blur_variance: float, e
 
 def _signals(
     scratch_count: int,
-    scratch_risk: str,
-    reflection_risk: str,
+    surface_score: int,
+    surface_grade: str,
     detected_disc: bool,
     quality_penalty: int,
 ) -> list[str]:
     signals = [
         "OpenCV로 원판 영역을 찾고 라벨/홀, 외부 배경, 강한 반사광을 제외한 뒤 표면만 분석했습니다.",
-        f"선분/엣지/밝기 대비 기준으로 스크래치 후보 {scratch_count}개를 감지했고 위험도는 {scratch_risk}입니다.",
-        f"반사 위험도는 {reflection_risk}로 집계했습니다.",
+        f"선분/엣지/밝기 대비 기준으로 스크래치 후보 {scratch_count}개를 감지했습니다.",
+        f"스크래치 분석은 {surface_grade} 등급, {surface_score}점입니다.",
     ]
     if not detected_disc:
         signals.append("원판 외곽 검출 신뢰도가 낮아 화면 중앙 기준의 보수적 원형 마스크를 사용했습니다.")
@@ -665,18 +679,3 @@ def _signals(
         signals.append("초점 또는 노출 조건 때문에 표면 점수와 신뢰도를 보수적으로 조정했습니다.")
     return signals
 
-
-def _risk_label(value: float, medium: float, high: float) -> str:
-    if value >= high:
-        return "high"
-    if value >= medium:
-        return "medium"
-    return "low"
-
-
-def _playback_impact(scratch_risk: str, reflection_risk: str) -> str:
-    if scratch_risk == "high":
-        return "높음"
-    if scratch_risk == "medium" or reflection_risk == "high":
-        return "주의"
-    return "낮음"

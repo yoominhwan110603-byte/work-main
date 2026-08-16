@@ -43,6 +43,7 @@ const SETTINGS_KEY = 'vinyl-check-settings';
 const PENDING_VERIFICATION_KEY = 'vinyl-check-pending-verification';
 const FAVORITES_KEY = 'vinyl-check-favorites';
 const COLLECTIONS_KEY = 'vinyl-check-collections';
+const LISTINGS_KEY = 'vinyl-check-listings';
 const MOCK_CODE = '123456';
 const currentApiBaseUrl = () => getApiBaseUrl();
 const AUTH_TIMEOUT_MS = 8000;
@@ -108,6 +109,7 @@ interface ListingCreatePayload {
   audio_grade?: string;
   audio_score?: number;
   audio_samples?: {
+    sample?: { name: string; durationSeconds: number; dataUrl?: string; startSeconds?: number; endSeconds?: number; recordedAt?: string };
     good?: { name: string; durationSeconds: number; dataUrl?: string; startSeconds?: number; endSeconds?: number; recordedAt?: string };
     noisy?: { name: string; durationSeconds: number; dataUrl?: string; startSeconds?: number; endSeconds?: number; recordedAt?: string };
   };
@@ -123,6 +125,23 @@ export interface ListingDraftEntry {
   title: string;
   draft: Record<string, unknown>;
   updatedAt: string;
+}
+
+function draftTimestamp(entry: ListingDraftEntry) {
+  const timestamp = new Date(entry.updatedAt || 0).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeDraftEntries(...groups: ListingDraftEntry[][]) {
+  const merged = new Map<string, ListingDraftEntry>();
+  groups.flat().forEach(entry => {
+    if (!entry?.id) return;
+    const previous = merged.get(entry.id);
+    if (!previous || draftTimestamp(entry) >= draftTimestamp(previous)) merged.set(entry.id, entry);
+  });
+  return [...merged.values()]
+    .sort((left, right) => draftTimestamp(right) - draftTimestamp(left))
+    .slice(0, 20);
 }
 
 const defaultUser: User = {
@@ -154,25 +173,46 @@ const defaultSettings: AppSettings = {
   },
 };
 
-function readJson<T>(key: string, fallback: T): T {
+const STORAGE_BACKUP_SUFFIX = ':backup';
+const storageBackupKey = (key: string) => `${key}${STORAGE_BACKUP_SUFFIX}`;
+
+function parseStoredJson<T>(value: string | null, fallback: T): T {
+  if (!value) return fallback;
+  const parsed = JSON.parse(value);
+  return parsed ?? fallback;
+}
+
+function readJsonFromStorage<T>(storage: Storage, key: string, fallback: T): T {
   try {
-    return JSON.parse(localStorage.getItem(key) || 'null') || fallback;
+    return parseStoredJson(storage.getItem(key), fallback);
   } catch {
-    localStorage.removeItem(key);
-    return fallback;
+    try {
+      return parseStoredJson(storage.getItem(storageBackupKey(key)), fallback);
+    } catch {
+      return fallback;
+    }
   }
+}
+
+function readJson<T>(key: string, fallback: T): T {
+  return readJsonFromStorage(localStorage, key, fallback);
+}
+
+function writeJsonToStorage(storage: Storage, key: string, value: unknown) {
+  const previous = storage.getItem(key);
+  if (previous) storage.setItem(storageBackupKey(key), previous);
+  storage.setItem(key, JSON.stringify(value));
+}
+
+function writeJson(key: string, value: unknown) {
+  writeJsonToStorage(localStorage, key, value);
 }
 
 function readStoredAuth<T>(key: string, fallback: T): T {
   const localValue = localStorage.getItem(key);
   const sessionValue = sessionStorage.getItem(key);
   if (!localValue && sessionValue) {
-    try {
-      return JSON.parse(sessionValue) || fallback;
-    } catch {
-      sessionStorage.removeItem(key);
-      return fallback;
-    }
+    return readJsonFromStorage(sessionStorage, key, fallback);
   }
   return readJson<T>(key, fallback);
 }
@@ -216,7 +256,7 @@ function sanitizeUser(user: Partial<User>): User {
 function applyTheme(theme: ThemeMode) {
   const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
   const shouldDark = theme === 'dark' || (theme === 'system' && prefersDark);
-  const themeColor = shouldDark ? '#0b1120' : '#ffffff';
+  const themeColor = shouldDark ? '#2a1a12' : '#ffffff';
   document.documentElement.classList.toggle('dark', shouldDark);
   document.documentElement.style.backgroundColor = themeColor;
   document.body.style.backgroundColor = themeColor;
@@ -232,16 +272,184 @@ function applyTheme(theme: ThemeMode) {
   }
 }
 
-function mergeWithMockAlbums(listings: Album[]) {
-  const hiddenIds = new Set(listings.filter(album => album.status === 'hidden').map(album => String(album.id)));
+const unavailableListingStatuses = new Set(['hidden', 'reserved', 'sold', 'deleted']);
+const isMarketVisibleAlbum = (album: Album) => !unavailableListingStatuses.has(String(album.status || 'published').toLowerCase());
+const mockAlbumIds = new Set(mockAlbums.map(album => String(album.id)));
+const isRealAlbum = (album: Album) => Boolean(album?.id) && !mockAlbumIds.has(String(album.id));
+
+function dedupeAlbums(listings: Album[]) {
   const merged = new Map<string, Album>();
-  listings
-    .filter(album => album.status !== 'hidden')
-    .forEach(album => merged.set(String(album.id), album));
-  mockAlbums.forEach(album => {
-    if (!hiddenIds.has(String(album.id)) && !merged.has(String(album.id))) merged.set(String(album.id), album);
+  listings.forEach(album => {
+    const id = String(album?.id || '');
+    if (!id || merged.has(id)) return;
+    merged.set(id, album);
   });
   return [...merged.values()];
+}
+
+function compactDataUrl(value?: string) {
+  if (!value) return '';
+  if (value.startsWith('data:') && value.length > 120_000) return '';
+  return value;
+}
+
+function compactAudioSamples(samples: Album['audioSamples']) {
+  if (!samples) return undefined;
+  return Object.fromEntries(Object.entries(samples).map(([key, sample]) => [
+    key,
+    { ...sample, dataUrl: compactDataUrl(sample.dataUrl) },
+  ])) as Album['audioSamples'];
+}
+
+function compactAnalysisReport(analysisReport?: Record<string, unknown>) {
+  const compacted = { ...(analysisReport || {}) };
+  delete compacted.coverImageDataUrl;
+  delete compacted.recordImageDataUrl;
+  delete compacted.recordVideoDataUrl;
+  delete compacted.audioSamples;
+  return compacted;
+}
+
+function compactAlbumForStorage(album: Album) {
+  const analysisReport = compactAnalysisReport(album.analysisReport);
+
+  return {
+    ...album,
+    images: (album.images || []).map(image => compactDataUrl(image)).filter(Boolean).slice(0, 5),
+    coverImageDataUrl: compactDataUrl(album.coverImageDataUrl),
+    recordImageDataUrl: compactDataUrl(album.recordImageDataUrl),
+    recordVideoDataUrl: '',
+    audioSamples: compactAudioSamples(album.audioSamples),
+    analysisReport,
+  };
+}
+
+function compactListingPayloadForServer(payload: ListingCreatePayload): ListingCreatePayload {
+  const analysisReport = compactAnalysisReport(payload.analysis_report);
+
+  return {
+    ...payload,
+    images: (payload.images || []).map(image => compactDataUrl(image)).filter(Boolean).slice(0, 5),
+    cover_image_data_url: compactDataUrl(payload.cover_image_data_url),
+    record_image_data_url: compactDataUrl(payload.record_image_data_url),
+    record_video_data_url: compactDataUrl(payload.record_video_data_url),
+    audio_samples: compactAudioSamples(payload.audio_samples),
+    analysis_report: analysisReport,
+  };
+}
+
+function compactDraftForServer(draft: Record<string, unknown>) {
+  const compacted = JSON.parse(JSON.stringify(draft)) as Record<string, unknown>;
+  const compactMedia = (value: unknown) => typeof value === 'string' ? compactDataUrl(value) : '';
+  for (const key of ['images', 'coverImageDataUrl', 'recordImageDataUrl', 'recordVideoDataUrl', 'audioDataUrl']) {
+    if (key === 'images') {
+      compacted[key] = Array.isArray(compacted[key])
+        ? (compacted[key] as unknown[]).map(compactMedia).filter(Boolean).slice(0, 5)
+        : [];
+    } else if (key in compacted) {
+      compacted[key] = compactMedia(compacted[key]);
+    }
+  }
+  const audioAnalysis = compacted.audioAnalysis;
+  if (audioAnalysis && typeof audioAnalysis === 'object') {
+    const compactedAnalysis = { ...(audioAnalysis as Record<string, unknown>) };
+    delete compactedAnalysis.rawAudioDataUrl;
+    delete compactedAnalysis.dataUrl;
+    compacted.audioAnalysis = compactedAnalysis;
+  }
+  return compacted;
+}
+
+function readCachedListings() {
+  return dedupeAlbums(readJson<Album[]>(LISTINGS_KEY, []).filter(isRealAlbum));
+}
+
+function persistCachedListings(listings: Album[]) {
+  try {
+    writeJson(LISTINGS_KEY, dedupeAlbums(listings.filter(isRealAlbum)).map(compactAlbumForStorage));
+  } catch {
+    // Keep runtime state even if WebView localStorage rejects large media payloads.
+  }
+}
+
+function mergeWithMockAlbums(listings: Album[]) {
+  const realListings = dedupeAlbums(listings.filter(isRealAlbum).filter(isMarketVisibleAlbum));
+  return realListings.length ? realListings : [...mockAlbums];
+}
+
+function upsertListing(listings: Album[], listing: Album) {
+  return mergeWithMockAlbums([listing, ...listings.filter(album => String(album.id) !== String(listing.id))]);
+}
+
+function localListingFromPayload(payload: ListingCreatePayload, user: User, existing?: Album): Album {
+  const now = new Date().toISOString();
+  const price = Number(payload.price || existing?.price || 0);
+  const minPrice = existing?.minPrice || Math.max(0, Math.round(price * 0.9));
+  const maxPrice = existing?.maxPrice || Math.round(price * 1.12);
+  const images = Array.from(new Set([
+    ...(payload.images || []),
+    payload.cover_image_data_url,
+    payload.discogs_cover_image_url,
+    payload.record_image_data_url,
+    ...(existing?.images || []),
+  ].filter(Boolean) as string[]));
+  const marketKey = existing?.marketKey || [
+    payload.discogs_release_id || '',
+    payload.catalog_number || '',
+    payload.title || '',
+    payload.artist || '',
+    payload.year || '',
+  ].join(':').toLocaleLowerCase('ko-KR');
+
+  return {
+    ...(existing || {}),
+    id: existing?.id || `local-listing-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title: payload.title || existing?.title || 'Untitled',
+    artist: payload.artist || existing?.artist || '',
+    year: Number(payload.year || existing?.year || 0),
+    genre: payload.genre || existing?.genre || '',
+    catalogNumber: payload.catalog_number || existing?.catalogNumber || '',
+    discogsReleaseId: payload.discogs_release_id ?? existing?.discogsReleaseId,
+    discogsCoverImageUrl: payload.discogs_cover_image_url || existing?.discogsCoverImageUrl || '',
+    releaseLabel: payload.release_label || existing?.releaseLabel || '',
+    releaseCountry: payload.release_country || existing?.releaseCountry || '',
+    pressingCondition: payload.pressing_condition || existing?.pressingCondition || '',
+    price,
+    priceRange: { min: minPrice, max: maxPrice },
+    audioGrade: payload.audio_grade || existing?.audioGrade || '',
+    audioScore: Number(payload.audio_score ?? existing?.audioScore ?? 0),
+    jacketGrade: payload.jacket_grade || existing?.jacketGrade || '',
+    jacketScore: Number(payload.jacket_score ?? existing?.jacketScore ?? 0),
+    isRare: Boolean(payload.is_rare ?? existing?.isRare ?? false),
+    isFirstPress: Boolean(payload.is_first_press ?? existing?.isFirstPress ?? false),
+    ownedByMe: true,
+    audioSamples: payload.audio_samples || existing?.audioSamples || {},
+    images,
+    coverImageDataUrl: payload.cover_image_data_url || existing?.coverImageDataUrl || payload.discogs_cover_image_url || '',
+    recordImageDataUrl: payload.record_image_data_url || existing?.recordImageDataUrl || '',
+    recordVideoDataUrl: payload.record_video_data_url || existing?.recordVideoDataUrl || '',
+    analysisReport: payload.analysis_report || existing?.analysisReport || {},
+    description: payload.description || existing?.description || '',
+    tags: payload.tags || existing?.tags || [],
+    seller: {
+      id: payload.user_id || existing?.seller?.id || user.id,
+      name: existing?.seller?.name || user.username || 'seller',
+      rating: Number(existing?.seller?.rating ?? user.rating ?? 0),
+      transactionCount: Number(existing?.seller?.transactionCount ?? user.transactionCount ?? 0),
+    },
+    location: payload.location || existing?.location || '',
+    views: Number(existing?.views || 0),
+    createdAt: existing?.createdAt || now,
+    status: existing?.status || 'published',
+    viewCount: Number(existing?.viewCount || existing?.views || 0),
+    favoriteCount: Number(existing?.favoriteCount || 0),
+    buyOrderCount: Number(existing?.buyOrderCount || 0),
+    wishlistCount: Number(existing?.wishlistCount || 0),
+    marketKey,
+    minPrice,
+    maxPrice,
+    sellerPrice: price,
+  };
 }
 
 const mockCollectionIds = new Set(mockCollections.map(collection => collection.id));
@@ -324,7 +532,7 @@ export const useAppStore = defineStore('app', {
     wishlistItems: [] as WishlistItem[],
     wishlistLoaded: false,
     wishlistLoading: false,
-    listings: mergeWithMockAlbums([]) as Album[],
+    listings: mergeWithMockAlbums(readCachedListings()) as Album[],
     unreadNotificationCount: 0,
     collections: mergeWithMockCollections(readJson<VinylCollection[]>(COLLECTIONS_KEY, [])) as VinylCollection[],
     settings: sanitizeSettings(readJson<Partial<AppSettings>>(SETTINGS_KEY, defaultSettings)),
@@ -350,7 +558,7 @@ export const useAppStore = defineStore('app', {
       const secondaryStorage = rememberMe ? sessionStorage : localStorage;
       secondaryStorage.removeItem(USER_KEY);
       secondaryStorage.removeItem(AUTH_TOKEN_KEY);
-      primaryStorage.setItem(USER_KEY, JSON.stringify(this.user));
+      writeJsonToStorage(primaryStorage, USER_KEY, this.user);
       primaryStorage.setItem(AUTH_TOKEN_KEY, token);
     },
     login(user: User) {
@@ -435,7 +643,7 @@ export const useAppStore = defineStore('app', {
     updateUserProfile(updates: Partial<User>) {
       this.user = sanitizeUser({ ...this.user, ...updates });
       const storage = sessionStorage.getItem(AUTH_TOKEN_KEY) ? sessionStorage : localStorage;
-      storage.setItem(USER_KEY, JSON.stringify(this.user));
+      writeJsonToStorage(storage, USER_KEY, this.user);
     },
     async loadUserProfileFromServer() {
       try {
@@ -477,7 +685,7 @@ export const useAppStore = defineStore('app', {
       if (!isValidEmail(nextEmail)) return { ok: false, message: '올바른 이메일 형식이 아닙니다.' };
       if (nextEmail.toLowerCase() === this.user.email.toLowerCase()) return { ok: false, message: '현재 사용 중인 이메일과 같습니다.' };
       this.pendingVerification = { type: 'email', value: nextEmail, code: MOCK_CODE };
-      localStorage.setItem(PENDING_VERIFICATION_KEY, JSON.stringify(this.pendingVerification));
+      writeJson(PENDING_VERIFICATION_KEY, this.pendingVerification);
       return { ok: true, message: '인증 코드가 발송되었습니다. 개발용 인증번호는 123456입니다.' };
     },
     confirmEmailChange(code: string) {
@@ -490,7 +698,7 @@ export const useAppStore = defineStore('app', {
     },
     setTheme(theme: ThemeMode) {
       this.settings.theme = theme;
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+      writeJson(SETTINGS_KEY, this.settings);
       applyTheme(theme);
     },
     updateSettings(updates: AppSettingsUpdate) {
@@ -500,11 +708,11 @@ export const useAppStore = defineStore('app', {
         notifications: { ...this.settings.notifications, ...(updates.notifications || {}) },
         trade: { ...this.settings.trade, ...(updates.trade || {}) },
       });
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(this.settings));
+      writeJson(SETTINGS_KEY, this.settings);
       applyTheme(this.settings.theme);
     },
     persistFavorites() {
-      localStorage.setItem(FAVORITES_KEY, JSON.stringify(this.favorites));
+      writeJson(FAVORITES_KEY, this.favorites);
     },
     findWishlistItemForAlbum(album: Album) {
       return this.wishlistItems.find(item => wishlistMatchesAlbum(item, album)) || null;
@@ -572,7 +780,7 @@ export const useAppStore = defineStore('app', {
     },
     persistCollections() {
       const localCollections = this.collections.filter(collection => !mockCollectionIds.has(collection.id));
-      localStorage.setItem(COLLECTIONS_KEY, JSON.stringify(localCollections));
+      writeJson(COLLECTIONS_KEY, localCollections);
     },
     async loadCollectionsFromServer(ownerId = '') {
       try {
@@ -686,7 +894,7 @@ export const useAppStore = defineStore('app', {
               summary: '컬렉션에 저장된 샘플 녹음과 상태 메모를 판매글 전환에 사용합니다.',
               audioGrade: collection.audioGrade || 'VG+',
               audioScore: collection.audioScore,
-              playbackRisk: 'low',
+              playbackRisk: null,
               analysisConfidence: 70,
             }
           : null,
@@ -703,7 +911,7 @@ export const useAppStore = defineStore('app', {
             defaultLocation ? `거래 위치는 ${defaultLocation} 기준으로 입력했습니다. 실제 거래 장소는 판매글에서 조정하세요.` : '판매글 전환 시 거래 위치를 추가해 주세요.',
           ].filter(Boolean).join('\n'),
           tags: tags.join(' '),
-          pressing: collection.isFirstPress ? '초반 추정' : '',
+          pressing: '',
           analysisConfirmed: 'true',
         },
       };
@@ -723,75 +931,92 @@ export const useAppStore = defineStore('app', {
       try {
         const response = await fetchApi('/listings');
         if (!response.ok) {
-          this.listings = mergeWithMockAlbums(this.listings);
+          this.listings = mergeWithMockAlbums([...this.listings, ...readCachedListings()]);
           return { ok: false, persisted: false };
         }
         const listings = await response.json() as Album[];
-        if (Array.isArray(listings)) this.listings = mergeWithMockAlbums(listings);
+        if (Array.isArray(listings)) {
+          this.listings = mergeWithMockAlbums([...listings, ...this.listings, ...readCachedListings()]);
+          persistCachedListings(this.listings);
+        }
         return { ok: true, persisted: true };
       } catch {
-        this.listings = mergeWithMockAlbums(this.listings);
+        this.listings = mergeWithMockAlbums([...this.listings, ...readCachedListings()]);
         return { ok: false, persisted: false };
       }
     },
     async publishListing(payload: ListingCreatePayload) {
       try {
+        const serverPayload = compactListingPayloadForServer({ ...payload, user_id: payload.user_id || this.user.id });
         const response = await fetchApi('/listings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, user_id: payload.user_id || this.user.id }),
-        });
-        if (!response.ok) return { ok: false, ...(await readListingFailure(response)) };
-        if (!response.ok) return { ok: false, message: '게시글 저장에 실패했습니다. 서버 응답을 확인해 주세요.' };
+          body: JSON.stringify(serverPayload),
+        }, 20000);
         if (!response.ok) return { ok: false, ...(await readListingFailure(response)) };
         const data = await response.json() as { listing?: Album };
-        if (data.listing) this.listings = [data.listing, ...this.listings.filter(album => album.id !== data.listing!.id)];
+        if (data.listing) {
+          this.listings = upsertListing(this.listings, data.listing);
+          persistCachedListings(this.listings);
+        }
         return { ok: true, listing: data.listing, message: '게시글을 서버에 저장했습니다.' };
       } catch {
-        return { ok: false, message: '서버 연결 실패로 게시글 저장에 실패했습니다.' };
+        const localListing = localListingFromPayload({ ...payload, user_id: payload.user_id || this.user.id }, this.user);
+        this.listings = upsertListing(this.listings, localListing);
+        persistCachedListings(this.listings);
+        return { ok: true, persisted: false, listing: localListing, message: '기기에 게시물을 저장했습니다. 서버 연결이 복구되면 다시 동기화해 주세요.' };
       }
     },
     async updateListing(albumId: string, payload: ListingCreatePayload) {
       const previous = this.listings;
+      const existing = this.listings.find(album => String(album.id) === String(albumId));
       try {
+        const serverPayload = compactListingPayloadForServer({ ...payload, user_id: payload.user_id || this.user.id });
         const response = await fetchApi(`/listings/${encodeURIComponent(albumId)}?user_id=${encodeURIComponent(this.user.id)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...payload, user_id: payload.user_id || this.user.id }),
-        });
+          body: JSON.stringify(serverPayload),
+        }, 20000);
         const data = await response.json().catch(() => ({})) as { listing?: Album; detail?: string };
         if (!response.ok) return { ok: false, ...(await readListingFailure(new Response(JSON.stringify(data), { status: response.status }))) };
         if (!response.ok || !data.listing) throw new Error(data.detail || '게시글 수정에 실패했습니다.');
-        this.listings = [data.listing, ...this.listings.filter(album => album.id !== albumId)];
+        this.listings = upsertListing(this.listings, data.listing);
+        persistCachedListings(this.listings);
         return { ok: true, listing: data.listing, message: '게시글을 수정했습니다.' };
       } catch (error) {
-        this.listings = previous;
+        if (existing) {
+          const localListing = localListingFromPayload({ ...payload, user_id: payload.user_id || this.user.id }, this.user, existing);
+          this.listings = upsertListing(previous, localListing);
+          persistCachedListings(this.listings);
+          return { ok: true, persisted: false, listing: localListing, message: '기기에 수정 내용을 저장했습니다. 서버 연결이 복구되면 다시 동기화해 주세요.' };
+        }
+        this.listings = mergeWithMockAlbums(previous);
         return { ok: false, message: error instanceof Error ? error.message : '게시글 수정에 실패했습니다.' };
       }
     },
     async hideListing(albumId: string) {
       const previous = this.listings;
       this.listings = this.listings.filter(album => album.id !== albumId);
+      persistCachedListings(this.listings);
       try {
         const response = await fetchApi(`/listings/${encodeURIComponent(albumId)}?user_id=${encodeURIComponent(this.user.id)}`, { method: 'DELETE' });
         const data = await response.json().catch(() => ({})) as { detail?: string };
         if (!response.ok) throw new Error(data.detail || '판매글을 내리지 못했습니다.');
         return { ok: true, message: '판매글을 내렸습니다.' };
       } catch (error) {
-        this.listings = previous;
+        if (previous.some(album => String(album.id) === String(albumId) && String(album.id).startsWith('local-listing-'))) {
+          return { ok: true, persisted: false, message: '기기에서 판매글을 내렸습니다. 서버 연결이 복구되면 다시 동기화해 주세요.' };
+        }
+        this.listings = mergeWithMockAlbums(previous);
+        persistCachedListings(this.listings);
         return { ok: false, message: error instanceof Error ? error.message : '판매글을 내리지 못했습니다.' };
       }
     },
     readDrafts(): ListingDraftEntry[] {
-      try {
-        return JSON.parse(localStorage.getItem(DRAFTS_KEY) || '[]') as ListingDraftEntry[];
-      } catch {
-        localStorage.removeItem(DRAFTS_KEY);
-        return [];
-      }
+      return readJson<ListingDraftEntry[]>(DRAFTS_KEY, []);
     },
     writeDrafts(drafts: ListingDraftEntry[]) {
-      localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+      writeJson(DRAFTS_KEY, drafts);
     },
     activeDraftId() {
       return localStorage.getItem(ACTIVE_DRAFT_ID_KEY) || '';
@@ -805,36 +1030,49 @@ export const useAppStore = defineStore('app', {
       const title = String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글');
       const entry = { id: draftId, title, draft, updatedAt: new Date().toISOString() };
       try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+        writeJson(DRAFT_KEY, draft);
       } catch {
-        // Large image/video data URLs can exceed WebView storage. Keep the in-memory/server flow alive.
+        try {
+          writeJson(DRAFT_KEY, compactDraftForServer(draft));
+        } catch {
+          // Keep the server flow alive when device storage is unavailable.
+        }
       }
       try {
-        this.writeDrafts([entry, ...this.readDrafts().filter(item => item.id !== draftId)].slice(0, 20));
+        this.writeDrafts(mergeDraftEntries([entry], this.readDrafts()));
       } catch {
-        // Ignore local draft-list quota failures; server persistence still runs.
+        try {
+          const compactEntry = { ...entry, draft: compactDraftForServer(draft) };
+          this.writeDrafts(mergeDraftEntries([compactEntry], this.readDrafts()));
+        } catch {
+          // Ignore local draft-list quota failures; server persistence still runs.
+        }
       }
     },
     async saveDraftToServer(draft: Record<string, unknown>, draftId = '') {
       this.saveDraft(draft);
       const activeId = this.activeDraftId() || draftId;
       try {
+        const serverDraft = compactDraftForServer(draft);
         const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            draft,
+            draft: serverDraft,
             draftId: activeId,
             title: String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글'),
           }),
         });
-        if (!response.ok) return { ok: false, persisted: false, message: '로컬에 임시 저장했습니다.' };
+        if (!response.ok) {
+          const failure = await response.json().catch(() => ({})) as { detail?: string; message?: string };
+          return { ok: false, persisted: false, message: String(failure.detail || failure.message || '서버 임시 저장에 실패했습니다. 기기 저장을 확인해 주세요.') };
+        }
         const data = await response.json() as { persisted: boolean; draft?: Record<string, unknown>; draftEntry?: ListingDraftEntry; drafts?: ListingDraftEntry[] };
         if (data.draft) this.saveDraft(data.draft);
         if (data.draftEntry) this.setActiveDraftId(data.draftEntry.id);
         if (data.drafts) {
           try {
-            this.writeDrafts(data.drafts);
+            this.writeDrafts(mergeDraftEntries(data.drafts, this.readDrafts()));
           } catch {
             // Keep publishing flow working even when local draft history is too large.
           }
@@ -860,15 +1098,22 @@ export const useAppStore = defineStore('app', {
         const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts`);
         if (!response.ok) return { ok: false, drafts: this.readDrafts() };
         const data = await response.json() as { drafts?: ListingDraftEntry[] };
-        if (data.drafts) this.writeDrafts(data.drafts);
-        return { ok: true, drafts: data.drafts || [] };
+        const drafts = mergeDraftEntries(data.drafts || [], this.readDrafts());
+        this.writeDrafts(drafts);
+        return { ok: true, drafts };
       } catch {
         return { ok: false, drafts: this.readDrafts() };
       }
     },
     activateDraft(entry: ListingDraftEntry) {
       this.setActiveDraftId(entry.id);
-      localStorage.setItem(DRAFT_KEY, JSON.stringify(entry.draft));
+      writeJson(DRAFT_KEY, entry.draft);
+    },
+    startFreshDraft() {
+      const draftId = `local-${Date.now()}`;
+      this.setActiveDraftId(draftId);
+      localStorage.removeItem(DRAFT_KEY);
+      return draftId;
     },
     async deleteDraft(draftId: string) {
       const drafts = this.readDrafts().filter(item => item.id !== draftId);
@@ -877,15 +1122,29 @@ export const useAppStore = defineStore('app', {
         localStorage.removeItem(ACTIVE_DRAFT_ID_KEY);
         localStorage.removeItem(DRAFT_KEY);
       }
-      void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' }).catch(() => undefined);
+      if (!this.isLoggedIn) {
+        return { ok: true, persisted: false, message: '기기에서 임시글을 삭제했습니다.' };
+      }
+      try {
+        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
+        const data = await response.json().catch(() => ({})) as { deleted?: boolean; detail?: string };
+        if (!response.ok) throw new Error(data.detail || '서버 임시글 삭제에 실패했습니다.');
+        if (data.deleted === false && draftId === 'legacy') {
+          const legacyResponse = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, { method: 'DELETE' });
+          const legacyData = await legacyResponse.json().catch(() => ({})) as { deleted?: boolean; detail?: string };
+          if (!legacyResponse.ok) throw new Error(legacyData.detail || '서버 임시글 삭제에 실패했습니다.');
+        }
+        return { ok: true, persisted: true, message: '임시글을 삭제했습니다.' };
+      } catch (error) {
+        return {
+          ok: false,
+          persisted: false,
+          message: error instanceof Error ? `${error.message} 기기에서는 삭제했습니다.` : '기기에서는 삭제했지만 서버 삭제에 실패했습니다.',
+        };
+      }
     },
     readDraft() {
-      try {
-        return JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null') as Record<string, unknown> | null;
-      } catch {
-        localStorage.removeItem(DRAFT_KEY);
-        return null;
-      }
+      return readJson<Record<string, unknown> | null>(DRAFT_KEY, null);
     },
     clearDraft() {
       const activeId = this.activeDraftId();
@@ -893,8 +1152,10 @@ export const useAppStore = defineStore('app', {
       if (activeId) {
         this.writeDrafts(this.readDrafts().filter(item => item.id !== activeId));
         localStorage.removeItem(ACTIVE_DRAFT_ID_KEY);
+        void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-drafts/${encodeURIComponent(activeId)}`, { method: 'DELETE' }).catch(() => undefined);
+      } else {
+        void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, { method: 'DELETE' }).catch(() => undefined);
       }
-      void fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, { method: 'DELETE' }).catch(() => undefined);
     },
     async checkServerHealth() {
       try {

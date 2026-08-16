@@ -1,12 +1,48 @@
 <template>
   <div class="space-y-4">
-    <section v-if="own" class="space-y-4 rounded-lg border bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+    <section v-if="showMenu" class="space-y-3">
+      <button type="button" class="flex w-full items-center gap-3 rounded-lg border bg-white p-4 text-left active:bg-gray-50 dark:border-neutral-800 dark:bg-neutral-900 dark:active:bg-neutral-800" @click="openCreateView">
+        <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-600 dark:bg-blue-950 dark:text-blue-200">
+          <PlusCircle :size="22" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block font-medium">위시리스트 등록</span>
+          <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">새로 찾는 LP 조건을 등록합니다.</span>
+        </span>
+        <ChevronRight :size="18" class="shrink-0 text-gray-400" />
+      </button>
+
+      <button type="button" class="flex w-full items-center gap-3 rounded-lg border bg-white p-4 text-left active:bg-gray-50 dark:border-neutral-800 dark:bg-neutral-900 dark:active:bg-neutral-800" @click="openListView">
+        <span class="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-700 dark:bg-neutral-800 dark:text-gray-200">
+          <ListChecks :size="22" />
+        </span>
+        <span class="min-w-0 flex-1">
+          <span class="block font-medium">등록한 위시리스트</span>
+          <span class="mt-1 block text-xs text-gray-500 dark:text-gray-400">{{ loading ? '불러오는 중' : `${items.length}개 등록됨` }}</span>
+        </span>
+        <ChevronRight :size="18" class="shrink-0 text-gray-400" />
+      </button>
+    </section>
+
+    <div v-if="own && !showMenu" class="flex items-center justify-between">
+      <button type="button" class="flex items-center gap-1 rounded-lg px-1 py-2 text-sm text-gray-600 dark:text-gray-300" @click="openMenuView">
+        <ArrowLeft :size="18" />
+        <span>위시</span>
+      </button>
+      <button v-if="showList" type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-xs text-white" @click="openCreateView">
+        등록
+      </button>
+    </div>
+
+    <p v-if="actionMessage" :class="['text-sm', actionError ? 'text-amber-600' : 'text-blue-600']">{{ actionMessage }}</p>
+
+    <section v-if="showCreate" class="space-y-4 rounded-lg border bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
       <div class="flex items-start justify-between gap-3">
         <div>
-          <h2 class="text-base font-medium">위시리스트 알림</h2>
-          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">앨범명/아티스트로 상위 10개 앨범을 보고, LP 특징을 골라 등록합니다.</p>
+          <h2 class="text-base font-medium">{{ editingId ? '위시리스트 수정' : '위시리스트 등록' }}</h2>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">찾는 LP 정보를 입력하고 등록합니다.</p>
         </div>
-        <span class="shrink-0 text-2xl leading-none" aria-hidden="true">🙏</span>
+        <PlusCircle :size="22" class="shrink-0 text-blue-600" />
       </div>
 
       <div v-if="!store.isLoggedIn" class="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950 dark:text-amber-200">
@@ -158,10 +194,9 @@
       </form>
 
       <p class="text-[11px] text-gray-400">Data provided by Discogs</p>
-      <p v-if="actionMessage" :class="['text-sm', actionError ? 'text-amber-600' : 'text-blue-600']">{{ actionMessage }}</p>
     </section>
 
-    <section class="space-y-3">
+    <section v-if="showList" class="space-y-3">
       <div class="flex items-center justify-between">
         <h2 class="text-base font-medium">{{ own ? '등록한 위시리스트' : '공개 위시리스트' }}</h2>
         <span class="text-xs text-gray-500">{{ items.length }}개</span>
@@ -189,16 +224,8 @@
             </div>
           </div>
         </div>
-
-        <div v-if="own && (matches[item.id] || []).length" class="mt-3 divide-y border-t dark:divide-neutral-800 dark:border-neutral-800">
-          <button v-for="album in (matches[item.id] || []).slice(0, 3)" :key="album.id" class="flex w-full items-center gap-3 py-3 text-left" @click="router.push(`/app/album/${album.id}`)">
-            <VinylCover :src="album.images[0] || album.discogsCoverImageUrl" :alt="album.title" class="h-12 w-12 shrink-0 rounded object-cover" />
-            <span class="min-w-0 flex-1">
-              <span class="block truncate text-sm">{{ album.title }}</span>
-              <span class="mt-1 block text-xs text-gray-500">{{ album.price.toLocaleString() }}원 · {{ album.audioGrade }}</span>
-            </span>
-          </button>
-          <button v-if="(matches[item.id] || []).length > 3" class="w-full py-3 text-sm text-blue-600" @click="openAllMatches(item)">전체 판매 상품 보기</button>
+        <div v-if="own && (matches[item.id] || []).length" class="mt-3 flex justify-end border-t pt-3 dark:border-neutral-800">
+          <button type="button" class="rounded-lg border px-3 py-2 text-xs text-blue-600 dark:border-neutral-700" @click="openAllMatches(item)">판매 보기</button>
         </div>
         <p class="mt-3 text-xs text-gray-400">{{ formatDate(item.createdAt) }} 등록</p>
       </article>
@@ -213,7 +240,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { Pencil, Trash2 } from 'lucide-vue-next';
+import { ArrowLeft, ChevronRight, ListChecks, Pencil, PlusCircle, Trash2 } from 'lucide-vue-next';
 import {
   createPressingInfo,
   fetchDiscogsCandidates,
@@ -230,6 +257,8 @@ import VinylCover from '@/shared/components/VinylCover.vue';
 const props = defineProps<{ ownerId: string; own: boolean }>();
 const router = useRouter();
 const store = useAppStore();
+type WishlistPanelView = 'menu' | 'create' | 'list';
+const currentView = ref<WishlistPanelView>(props.own ? 'menu' : 'list');
 const items = ref<WishlistItem[]>([]);
 const matches = ref<Record<string, Album[]>>({});
 const candidates = ref<AlbumCandidate[]>([]);
@@ -256,6 +285,26 @@ let lookupTimer: number | null = null;
 let lookupRequest = 0;
 let versionRequest = 0;
 let applyingCandidate = false;
+
+const showMenu = computed(() => props.own && currentView.value === 'menu');
+const showCreate = computed(() => props.own && currentView.value === 'create');
+const showList = computed(() => !props.own || currentView.value === 'list');
+
+const openMenuView = () => {
+  resetForm();
+  currentView.value = 'menu';
+};
+
+const openCreateView = () => {
+  resetForm();
+  currentView.value = 'create';
+};
+
+const openListView = () => {
+  resetForm();
+  currentView.value = 'list';
+  void loadItems();
+};
 
 const compactFeatureText = (value: unknown) => String(value || '').trim().replace(/\s+/g, ' ');
 const countryFeature = (value: unknown) => {
@@ -586,6 +635,7 @@ const saveWishlist = async () => {
     }
     resetForm();
     await loadItems();
+    currentView.value = 'list';
   } catch (error) {
     actionError.value = true;
     actionMessage.value = error instanceof Error ? error.message : '위시리스트를 저장하지 못했습니다.';
@@ -596,6 +646,7 @@ const saveWishlist = async () => {
 
 const editWishlist = (item: WishlistItem) => {
   editingId.value = item.id;
+  currentView.value = 'create';
   applyingCandidate = true;
   clearSearchResults();
   form.title = item.title;
@@ -642,7 +693,11 @@ const formatDate = (timestamp: string) => new Date(timestamp).toLocaleDateString
 watch(() => [form.catalogNumber, form.title, form.artist], () => {
   if (!applyingCandidate) scheduleLookup();
 });
-watch(() => [props.ownerId, props.own], () => { void loadItems(); });
+watch(() => [props.ownerId, props.own], () => {
+  currentView.value = props.own ? 'menu' : 'list';
+  resetForm();
+  void loadItems();
+});
 onMounted(() => { void loadItems(); });
 onBeforeUnmount(clearLookupTimer);
 </script>

@@ -28,6 +28,33 @@ class WishlistMatchingTests(unittest.TestCase):
         self.assertFalse(api.wishlist_matches_listing(wish, {"status": "sold", "catalog_number": "CS 8163"}))
         self.assertFalse(api.wishlist_matches_listing(wish, {"status": "hidden", "catalog_number": "CS 8163"}))
 
+    def test_listing_storage_compaction_removes_large_inline_media(self):
+        large_data_url = "data:image/jpeg;base64," + ("A" * 130_000)
+        compacted = api.compact_listing_for_storage({
+            "id": "listing-large-media",
+            "images": [large_data_url, "https://example.com/cover.jpg"],
+            "cover_image_data_url": large_data_url,
+            "recordImageDataUrl": large_data_url,
+            "record_video_data_url": large_data_url,
+            "audio_samples": {
+                "good": {"name": "sample", "durationSeconds": 20, "dataUrl": large_data_url},
+            },
+            "analysis_report": {
+                "coverImageDataUrl": large_data_url,
+                "recordImageDataUrl": large_data_url,
+                "recordVideoDataUrl": large_data_url,
+                "audioSamples": {"good": {"dataUrl": large_data_url}},
+                "audio": {"audioScore": 85},
+            },
+        })
+
+        self.assertEqual(compacted["images"], ["https://example.com/cover.jpg"])
+        self.assertEqual(compacted["cover_image_data_url"], "")
+        self.assertEqual(compacted["record_image_data_url"], "")
+        self.assertEqual(compacted["record_video_data_url"], "")
+        self.assertNotIn("dataUrl", compacted["audio_samples"]["good"])
+        self.assertEqual(compacted["analysis_report"], {"audio": {"audioScore": 85}})
+
 
 class WishlistApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

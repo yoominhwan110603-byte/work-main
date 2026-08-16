@@ -1,33 +1,32 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from statistics import mean
 from typing import Any
 
 
 GRADE_RANK = {
-    "M": 5,
-    "NM": 5,
-    "NM-": 5,
+    "M": 7,
+    "NM": 6,
+    "NM-": 6,
+    "EX": 5,
     "VG+": 4,
     "VG": 3,
-    "G+": 2,
-    "G": 1,
-    "F": 0,
-    "P": 0,
+    "G": 2,
+    "F": 1,
+    "P": 1,
 }
 
 GRADE_BANDS = {
-    "M": (0.90, 1.30),
-    "NM": (0.90, 1.30),
-    "NM-": (0.90, 1.30),
-    "VG+": (0.75, 1.10),
-    "VG": (0.55, 0.85),
-    "G+": (0.30, 0.60),
-    "G": (0.30, 0.60),
-    "F": (0.30, 0.60),
-    "P": (0.30, 0.60),
+    "M": (1.02, 1.35),
+    "NM": (0.92, 1.25),
+    "NM-": (0.92, 1.25),
+    "EX": (0.82, 1.12),
+    "VG+": (0.70, 0.98),
+    "VG": (0.55, 0.82),
+    "G": (0.35, 0.60),
+    "F": (0.18, 0.38),
+    "P": (0.18, 0.38),
 }
 
 
@@ -71,11 +70,14 @@ def normalize_grade(grade: Any, score: Any = None) -> str:
         "MINT": "M",
         "NEARMINT": "NM",
         "NM/M-": "NM",
+        "EXCELLENT": "EX",
         "VERYGOODPLUS": "VG+",
         "VERYGOOD": "VG",
-        "GOODPLUS": "G+",
+        "G+": "G",
+        "GOODPLUS": "G",
         "GOOD": "G",
-        "FAIR": "F",
+        "F": "P",
+        "FAIR": "P",
         "POOR": "P",
     }
     if raw in aliases:
@@ -86,15 +88,19 @@ def normalize_grade(grade: Any, score: Any = None) -> str:
         numeric_score = int(float(str(score)))
     except (TypeError, ValueError):
         numeric_score = 0
-    if numeric_score >= 90:
+    if numeric_score >= 96:
+        return "M"
+    if numeric_score >= 88:
         return "NM"
-    if numeric_score >= 82:
+    if numeric_score >= 80:
+        return "EX"
+    if numeric_score >= 70:
         return "VG+"
-    if numeric_score >= 72:
+    if numeric_score >= 58:
         return "VG"
-    if numeric_score >= 62:
-        return "G+"
-    return "G"
+    if numeric_score >= 45:
+        return "G"
+    return "P"
 
 
 def grade_rank(grade: Any) -> int:
@@ -182,12 +188,8 @@ def _catalog_seed_base(listing: dict[str, Any]) -> int:
         base *= 0.92
     if _value(listing, "catalog_number", "catalogNumber"):
         base *= 1.08
-    if _bool_value(listing, "is_first_press", "isFirstPress"):
-        base *= 1.35
-    if _bool_value(listing, "is_rare", "isRare"):
-        base *= 1.35
     tags = " ".join(str(tag) for tag in (_value(listing, "tags", default=[]) or []))
-    if any(keyword in _normalize_text(tags) for keyword in ("limited", "promo", "obi", "signed", "mono", "초판", "한정", "희귀")):
+    if any(keyword in _normalize_text(tags) for keyword in ("limited", "promo", "obi", "signed", "mono", "한정")):
         base *= 1.18
     return round_price(base)
 
@@ -232,14 +234,7 @@ def calculate_base_price(
         ]
     ) or catalog_seed_base
 
-    media_factor = {"M": 1.08, "NM": 1.08, "NM-": 1.06, "VG+": 1.0, "VG": 0.92, "G+": 0.80, "G": 0.70, "F": 0.62, "P": 0.55}.get(effective_media_grade(listing), 0.9)
-    sleeve_factor = {"M": 1.04, "NM": 1.04, "NM-": 1.03, "VG+": 1.0, "VG": 0.96, "G+": 0.91, "G": 0.86, "F": 0.82, "P": 0.78}.get(effective_sleeve_grade(listing), 0.95)
-    scarcity_factor = 1.0
-    if _bool_value(listing, "is_first_press", "isFirstPress"):
-        scarcity_factor += 0.07
-    if _bool_value(listing, "is_rare", "isRare"):
-        scarcity_factor += 0.09
-
+    media_factor = {"M": 1.12, "NM": 1.08, "NM-": 1.08, "EX": 1.03, "VG+": 1.0, "VG": 0.92, "G": 0.72, "F": 0.50, "P": 0.50}.get(effective_media_grade(listing), 0.9)
     supply_count = len(same_listings) + 1
     demand_factor = 1.0
     demand_factor += min(0.14, len(active_orders) * 0.025)
@@ -250,7 +245,7 @@ def calculate_base_price(
     elif supply_count >= 4:
         demand_factor -= min(0.15, (supply_count - 3) * 0.035)
 
-    return round_price(raw_base * media_factor * sleeve_factor * scarcity_factor * demand_factor)
+    return round_price(raw_base * media_factor * demand_factor)
 
 
 def calculate_price_range(base_price: int, media_grade: Any) -> dict[str, int]:
@@ -266,14 +261,6 @@ def calculate_recommended_price(
 ) -> int:
     price_range = calculate_price_range(base_price, effective_media_grade(listing))
     recommendation = base_price * grade_midpoint(effective_media_grade(listing))
-    sleeve_rank = grade_rank(effective_sleeve_grade(listing))
-    media_rank = grade_rank(effective_media_grade(listing))
-    if sleeve_rank < media_rank:
-        recommendation *= max(0.90, 1 - (media_rank - sleeve_rank) * 0.035)
-    if _bool_value(listing, "is_first_press", "isFirstPress"):
-        recommendation *= 1.02
-    if _bool_value(listing, "is_rare", "isRare"):
-        recommendation *= 1.03
     recommended = round_price(recommendation)
     return min(price_range["maxPrice"], max(price_range["minPrice"], recommended))
 
@@ -285,12 +272,8 @@ def _order_matches_listing(order: dict[str, Any], listing: dict[str, Any]) -> bo
         return False
     if grade_rank(effective_media_grade(listing)) < grade_rank(_value(order, "min_media_grade", "minMediaGrade", default="G")):
         return False
-    if grade_rank(effective_sleeve_grade(listing)) < grade_rank(_value(order, "min_sleeve_grade", "minSleeveGrade", default="G")):
-        return False
     pressing_condition = _normalize_text(_value(order, "pressing_condition", "pressingCondition"))
     if pressing_condition and pressing_condition not in normalize_market_key(listing):
-        return False
-    if _bool_value(order, "is_first_press_only", "isFirstPressOnly") and not _bool_value(listing, "is_first_press", "isFirstPress"):
         return False
     region = _normalize_text(_value(order, "region_preference", "regionPreference"))
     listing_region = _normalize_text(_value(listing, "location", default=""))
@@ -352,7 +335,7 @@ def build_market_estimate(
         "isValidPrice": is_valid,
         "priceStatus": price_status,
         "metrics": metrics,
-        "reason": "규칙 기반 시세: 최근 거래, 유사 매물, 상태 등급, 희귀도, 수요/공급 지표를 반영했습니다.",
+        "reason": "규칙 기반 시세: 최근 거래, 유사 매물, 상태 등급, 수요/공급 지표를 반영했습니다.",
     }
     estimate.update(
         {
@@ -381,24 +364,7 @@ def validate_listing_price(
     estimate = build_market_estimate(listing, listings, buy_orders, price_history, seller_price=seller_price)
     if seller_price <= 0:
         return False, estimate, "판매 가격을 입력해 주세요."
-    if seller_price < estimate["minPrice"]:
-        return False, estimate, f"판매가는 하한가 {estimate['minPrice']:,}원 이상이어야 합니다."
-    if seller_price > estimate["maxPrice"]:
-        return False, estimate, f"판매가는 상한가 {estimate['maxPrice']:,}원을 넘을 수 없습니다."
     return True, estimate, ""
-
-
-def _age_days(listing: dict[str, Any]) -> int:
-    raw = str(_value(listing, "created_at", "createdAt", default=""))
-    if not raw:
-        return 0
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return 0
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return max(0, (datetime.now(timezone.utc) - parsed).days)
 
 
 def build_market_advice(
@@ -415,16 +381,12 @@ def build_market_advice(
         advice.append({"type": "price", "severity": "warning", "message": f"현재 가격은 추천 판매가보다 {delta}% 높습니다."})
     if price > estimate["maxPrice"]:
         advice.append({"type": "range", "severity": "high", "message": "상태 등급 대비 가격이 상한가를 넘었습니다."})
-    if _age_days(listing) >= 14 and _status(listing) == "published":
-        advice.append({"type": "stale", "severity": "warning", "message": "등록 후 14일 이상 판매되지 않았습니다. 추천가 이하 조정을 검토해 보세요."})
     views = _int_value(listing, "view_count", "viewCount", "views")
     favorites = _int_value(listing, "favorite_count", "favoriteCount")
     if views >= 30 and favorites <= max(1, views // 20):
         advice.append({"type": "conversion", "severity": "info", "message": "조회수 대비 찜이 낮습니다. 대표 사진이나 설명 보강이 도움이 됩니다."})
     if favorites >= 3 and estimate["metrics"]["buyOrderCount"] == 0:
         advice.append({"type": "demand", "severity": "info", "message": "찜은 있지만 구매 대기가 없습니다. 추천 가격에 가까울수록 전환 가능성이 높습니다."})
-    if estimate["instantSaleAvailable"]:
-        advice.append({"type": "instant_sale", "severity": "positive", "message": f"즉시 판매 가능한 구매 대기가 있습니다. 가능가 {estimate['instantSalePrice']:,}원."})
     if not advice:
         advice.append({"type": "normal", "severity": "positive", "message": "현재 가격은 시세 범위 안에 있습니다."})
     return {"estimate": estimate, "advice": advice}

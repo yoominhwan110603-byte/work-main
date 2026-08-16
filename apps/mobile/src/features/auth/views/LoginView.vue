@@ -68,10 +68,20 @@ declare global {
 const GOOGLE_SCRIPT_ID = 'google-identity-services';
 let nativeGoogleInitializedFor = '';
 
-const isLocalWeb = () => {
+const isLocalOrLanWeb = () => {
   if (Capacitor.isNativePlatform()) return false;
-  return ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+  const hostname = window.location.hostname;
+  return (
+    ['localhost', '127.0.0.1', '::1'].includes(hostname) ||
+    /^10\./.test(hostname) ||
+    /^192\.168\./.test(hostname) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+  );
 };
+
+const canUseDevGoogleLogin = () =>
+  import.meta.env.VITE_ALLOW_DEV_GOOGLE_LOGIN === 'true' ||
+  (import.meta.env.DEV && isLocalOrLanWeb());
 
 const router = useRouter();
 const store = useAppStore();
@@ -82,6 +92,18 @@ const message = ref('');
 const messageType = ref<'info' | 'error'>('info');
 const serverOk = ref(false);
 const healthMessage = ref('서버 연결 확인 중...');
+
+const devGoogleProfile = () => {
+  const typedEmail = form.emailOrUsername.includes('@') ? form.emailOrUsername : undefined;
+  return {
+    email: typedEmail || 'google-user@vinyl-check.local',
+    name: typedEmail ? typedEmail.split('@')[0] : 'Google User',
+  };
+};
+
+const loginWithDevGoogle = async () => {
+  await store.loginWithGoogle(devGoogleProfile(), form.rememberMe);
+};
 
 onMounted(async () => {
   const health = await store.checkServerHealth();
@@ -187,17 +209,22 @@ const handleGoogleLogin = async () => {
   messageType.value = 'info';
   try {
     const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (isLocalWeb()) {
-      const typedEmail = form.emailOrUsername.includes('@') ? form.emailOrUsername : undefined;
-      await store.loginWithGoogle({ email: typedEmail || 'google-user@vinyl-check.local', name: typedEmail ? typedEmail.split('@')[0] : 'Google User' }, form.rememberMe);
+    if (canUseDevGoogleLogin() && isLocalOrLanWeb()) {
+      await loginWithDevGoogle();
     } else if (googleClientId) {
-      const credential = Capacitor.isNativePlatform()
-        ? await requestNativeGoogleCredential(googleClientId)
-        : await requestGoogleCredential(googleClientId);
-      await store.loginWithGoogle({ credential }, form.rememberMe);
+      try {
+        const credential = Capacitor.isNativePlatform()
+          ? await requestNativeGoogleCredential(googleClientId)
+          : await requestGoogleCredential(googleClientId);
+        await store.loginWithGoogle({ credential }, form.rememberMe);
+      } catch (error) {
+        if (!canUseDevGoogleLogin()) throw error;
+        await loginWithDevGoogle();
+      }
+    } else if (canUseDevGoogleLogin()) {
+      await loginWithDevGoogle();
     } else {
-      const typedEmail = form.emailOrUsername.includes('@') ? form.emailOrUsername : undefined;
-      await store.loginWithGoogle({ email: typedEmail || 'google-user@vinyl-check.local', name: typedEmail ? typedEmail.split('@')[0] : 'Google User' }, form.rememberMe);
+      throw new Error('Google Client ID is not configured.');
     }
     finishLogin();
   } catch (error) {

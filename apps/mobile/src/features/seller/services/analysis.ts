@@ -119,13 +119,15 @@ export interface LpRecognition {
   isRecord: boolean;
   source?: string;
   persisted?: boolean;
+  analysisAvailable?: boolean;
+  analysisUnavailableReason?: string;
   confidence: number;
   signals: string[];
   surfaceScore: number;
   surfaceGrade?: string;
   scratchCount: number;
-  scratchRisk: 'low' | 'medium' | 'high';
-  reflectionRisk: 'low' | 'medium' | 'high';
+  scratchRisk?: 'unknown' | null;
+  reflectionRisk?: 'unknown' | null;
   scratchRegions: ScratchRegion[];
   scratchDetails?: {
     displayedRegions?: number;
@@ -142,14 +144,14 @@ export interface LpRecognition {
     detectedDisc?: boolean;
   };
   dustOrReflectionNote: string;
-  playbackImpact: '낮음' | '주의' | '높음';
+  playbackImpact?: string | null;
 }
 
 export interface AudioSampleAnalysis {
   filename: string;
   requestedSeconds: number;
-  estimatedNoiseLevel: string;
-  scratchRisk: string;
+  estimatedNoiseLevel?: null;
+  scratchRisk?: null;
   usableForListingSample: boolean;
   score?: number;
   durationSeconds?: number;
@@ -158,30 +160,49 @@ export interface AudioSampleAnalysis {
   noiseFloorDb?: number;
   adjustedNoiseFloorDb?: number | null;
   dynamicRangeDb?: number;
-  clippingRisk?: string;
+  clippingRisk?: null;
   clippingRatio?: number;
   channelImbalanceDb?: number;
   peakDb?: number;
   rmsDb?: number;
   transientDensity?: number;
   highFrequencyNoise?: number;
+  spectralIssueCount?: number;
+  spectralIssueDurationSeconds?: number;
+  spectralIssueRate?: number;
+  spectralIssueDurationRatio?: number;
+  spectralPenalty?: number;
+  problemFrequencyRangeHz?: { min: number; max: number };
 }
 
 export interface AudioAnalysisResult {
   source: 'librosa' | 'mock' | 'fallback' | 'browser';
-  audioScore: number;
-  audioGrade: string;
-  playbackRisk?: 'low' | 'medium' | 'high';
+  analysisAvailable?: boolean;
+  analysisUnavailableReason?: string;
+  audioScore: number | null;
+  audioGrade: string | null;
+  lpConditionScore?: number | null;
+  lpConditionGrade?: string | null;
+  environmentScore?: number | null;
+  environmentGrade?: string | null;
+  playbackRisk?: null;
   clickCount?: number;
   noiseFloorDb?: number | null;
   ambientNoiseFloorDb?: number | null;
   adjustedNoiseFloorDb?: number | null;
   dynamicRangeDb?: number | null;
-  clippingRisk?: string | null;
+  clippingRisk?: null;
   channelImbalanceDb?: number | null;
   highFrequencyNoise?: number | null;
+  spectralIssueCount?: number | null;
+  spectralIssueDurationSeconds?: number | null;
+  spectralIssueRate?: number | null;
+  spectralIssueDurationRatio?: number | null;
+  spectralPenalty?: number | null;
+  problemFrequencyRangeHz?: { min: number; max: number } | null;
   analysisConfidence?: number;
   warnings?: string[];
+  audioSample?: AudioSampleAnalysis | null;
   goodSample?: AudioSampleAnalysis | null;
   noisySample?: AudioSampleAnalysis | null;
   ambientSample?: AudioSampleAnalysis | null;
@@ -240,13 +261,14 @@ const dbFromAmplitude = (value: number) => 20 * Math.log10(Math.max(value, 0.000
 const dbFromPower = (value: number) => 10 * Math.log10(Math.max(value, 0.000000000001));
 const riskFromRatio = (value: number, medium: number, high: number): 'low' | 'medium' | 'high' => value >= high ? 'high' : value >= medium ? 'medium' : 'low';
 const gradeFromScore = (score: number) => {
-  if (score >= 90) return 'NM';
-  if (score >= 82) return 'VG+';
-  if (score >= 72) return 'VG';
-  if (score >= 62) return 'G+';
-  return 'G';
+  if (score >= 96) return 'M';
+  if (score >= 88) return 'NM';
+  if (score >= 80) return 'EX';
+  if (score >= 70) return 'VG+';
+  if (score >= 58) return 'VG';
+  if (score >= 45) return 'G';
+  return 'P';
 };
-
 function percentile(values: number[], ratio: number) {
   if (!values.length) return 0;
   const sorted = [...values].sort((left, right) => left - right);
@@ -259,6 +281,56 @@ function subtractNoiseFloorDb(sampleDb?: number | null, ambientDb?: number | nul
   const samplePower = 10 ** (sampleDb / 10);
   const ambientPower = 10 ** (ambientDb / 10);
   return dbFromPower(Math.max(samplePower - ambientPower, samplePower * 0.08));
+}
+
+const AUDIO_PROBLEM_FREQUENCY_RANGE_HZ = { min: 4000, max: 12000 };
+const MIN_AUDIO_ANALYSIS_SECONDS = 60;
+const AUDIO_CLICK_SCORE_MULTIPLIER = 300;
+
+type AudioAnalysisFiles = {
+  sample?: File;
+  good?: File;
+  noisy?: File;
+  ambient?: File;
+};
+
+type AudioSampleLabel = 'sample' | 'ambient' | 'good' | 'noisy';
+
+function audioScoreFromClicks(clickCount: number, durationSeconds: number) {
+  const score = 100 - (AUDIO_CLICK_SCORE_MULTIPLIER * (clickCount / Math.max(durationSeconds, 1)));
+  return Math.round(clamp(score, 0, 100));
+}
+
+function summarizeIssueFrames(issueFrames: boolean[], frameSeconds: number) {
+  const maxGapFrames = Math.max(1, Math.round(0.12 / Math.max(frameSeconds, 0.001)));
+  let issueFrameCount = 0;
+  let issueCount = 0;
+  let insideIssue = false;
+  let gapFrames = 0;
+
+  for (const isIssue of issueFrames) {
+    if (isIssue) {
+      issueFrameCount += 1;
+      if (!insideIssue) {
+        issueCount += 1;
+        insideIssue = true;
+      }
+      gapFrames = 0;
+      continue;
+    }
+    if (insideIssue) {
+      gapFrames += 1;
+      if (gapFrames > maxGapFrames) {
+        insideIssue = false;
+        gapFrames = 0;
+      }
+    }
+  }
+
+  return {
+    count: issueCount,
+    durationSeconds: issueFrameCount * frameSeconds,
+  };
 }
 
 const knownCandidates: AlbumCandidate[] = [
@@ -405,13 +477,12 @@ export async function fetchTrackRecommendations(catalogNumber: string): Promise<
 }
 
 export function createPressingInfo(candidate: AlbumCandidate): PressingInfo {
-  const likelyFirst = candidate.id.includes('cl-1355') || candidate.id.includes('pcs-7088');
   return {
     releaseCountry: candidate.country,
     releaseYear: candidate.year,
-    pressing: candidate.pressing || (likelyFirst ? '초반 또는 초기 프레스로 추정' : '리이슈 또는 추가 확인 필요'),
+    pressing: candidate.pressing || '리이슈 또는 추가 확인 필요',
     label: candidate.label,
-    rarity: likelyFirst ? '높음' : candidate.confidence > 85 ? '중간 이상' : '확인 필요',
+    rarity: '확인 필요',
     catalogNumber: candidate.catalogNumber,
   };
 }
@@ -531,23 +602,6 @@ function imageStats(context: CanvasRenderingContext2D, width: number, height: nu
   };
 }
 
-function makeFallbackScratchRegions(seed: number, scratchCount: number, scratchRisk: 'low' | 'medium' | 'high') {
-  return Array.from({ length: Math.min(scratchCount, 8) }, (_, index) => {
-    const regionSeed = (seed >> (index % 16)) + index * 97;
-    const x1 = 0.16 + ((regionSeed % 58) / 100);
-    const y1 = 0.18 + (((regionSeed >> 3) % 56) / 100);
-    const length = 0.12 + (((regionSeed >> 6) % 18) / 100);
-    const slope = (((regionSeed >> 9) % 21) - 10) / 100;
-    return {
-      x1: round(clamp(x1, 0.06, 0.92), 4),
-      y1: round(clamp(y1, 0.06, 0.92), 4),
-      x2: round(clamp(x1 + length, 0.06, 0.94), 4),
-      y2: round(clamp(y1 + slope, 0.06, 0.94), 4),
-      severity: (index < 2 && scratchRisk !== 'low' ? scratchRisk : 'low') as 'low' | 'medium' | 'high',
-    };
-  });
-}
-
 function recordRegionsFromBuckets(buckets: { score: number; angle: number; radius: number; samples: number }[], targetCount: number) {
   const ranked = buckets
     .filter(bucket => bucket.samples > 0)
@@ -632,15 +686,12 @@ async function analyzeRecordSurfaceInBrowser(dataUrl: string, mediaType: 'image'
   const annulusAverage = annulusValues.length ? annulusValues.reduce((sum, value) => sum + value, 0) / annulusValues.length : exposure;
   const centerHoleConfidence = clamp((annulusAverage - centerAverage + 18) / 80, 0, 1);
   const scratchCount = Math.round(clamp(scratchDensity * 260 + dustRatio * 20 + glareRatio * 5, 0, 14));
-  const scratchRisk = scratchCount >= 8 ? 'high' : scratchCount >= 3 ? 'medium' : 'low';
-  const reflectionRisk = glareRatio >= 0.12 ? 'high' : glareRatio >= 0.04 ? 'medium' : 'low';
   const dustPenalty = dustRatio * 95;
   const scratchPenalty = scratchDensity * 420;
   const reflectionPenalty = glareRatio * 44;
   const blurPenalty = blurVariance < 9 ? 9 : blurVariance < 15 ? 5 : 0;
   const contrastBoost = clamp(grooveContrast * 8, 0, 5);
   const surfaceScore = Math.round(clamp(94 - scratchPenalty - dustPenalty - reflectionPenalty - blurPenalty + contrastBoost, 42, 96));
-  const playbackImpact = scratchRisk === 'high' ? '높음' : scratchRisk === 'medium' || reflectionRisk === 'high' ? '주의' : '낮음';
   const scratchRegions = recordRegionsFromBuckets(buckets, Math.min(scratchCount, 9));
 
   return {
@@ -649,8 +700,8 @@ async function analyzeRecordSurfaceInBrowser(dataUrl: string, mediaType: 'image'
     surfaceScore,
     surfaceGrade: gradeFromScore(surfaceScore),
     scratchCount,
-    scratchRisk,
-    reflectionRisk,
+    scratchRisk: null,
+    reflectionRisk: null,
     scratchRegions,
     scratchDetails: {
       displayedRegions: scratchRegions.length,
@@ -666,46 +717,39 @@ async function analyzeRecordSurfaceInBrowser(dataUrl: string, mediaType: 'image'
       centerHoleConfidence: round(centerHoleConfidence, 2),
       detectedDisc: centerHoleConfidence > 0.28 || grooveContrast > 0.16,
     },
-    dustOrReflectionNote: reflectionRisk === 'high'
+    dustOrReflectionNote: glareRatio >= 0.12
       ? '강한 반사가 많아 스크래치 후보가 과대 표시될 수 있습니다. 다른 각도의 사진을 한 장 더 추가하면 판정이 안정됩니다.'
       : dustRatio > 0.035
         ? '먼지 또는 표면 입자가 감지되었습니다. 클리닝 후 재촬영하면 실제 흠집과 먼지를 더 잘 구분할 수 있습니다.'
         : '판면 이미지의 홈 대비와 선형 흠집 후보를 기준으로 계산했습니다.',
-    playbackImpact,
+    playbackImpact: null,
     signals: [
       `브라우저 Canvas 분석으로 홈 대비 ${round(grooveContrast * 100, 0)}%, 반사 ${round(glareRatio * 100, 1)}%를 확인했습니다.`,
       `스크래치 후보 밀도 ${round(scratchDensity * 100, 2)}%, 먼지/입자 후보 ${round(dustRatio * 100, 1)}%입니다.`,
-      `판면 등급은 ${gradeFromScore(surfaceScore)} 수준으로 추정됩니다.`,
+      `스크래치 분석은 ${gradeFromScore(surfaceScore)} 등급, ${surfaceScore}점입니다.`,
     ],
   };
 }
 
 export function recognizeLpImage(dataUrl: string, mediaType: 'image' | 'video' = 'image'): LpRecognition {
   const hasMedia = dataUrl.length > 120;
-  const seed = stableContentSeed(dataUrl);
-  const scratchCount = hasMedia ? (seed % 8) + (mediaType === 'video' ? ((seed >> 4) % 3) : 0) : 0;
-  const reflectionBucket = hasMedia ? (seed >> 7) % 4 : 0;
-  const qualityPenalty = hasMedia ? ((seed >> 11) % 8) + (mediaType === 'video' ? 2 : 0) : 0;
-  const surfaceScore = hasMedia ? Math.max(45, Math.min(86, 84 - scratchCount * 3 - reflectionBucket * 5 - qualityPenalty)) : 0;
-  const scratchRisk = scratchCount >= 8 ? 'high' : scratchCount >= 3 ? 'medium' : 'low';
-  const reflectionRisk = reflectionBucket >= 3 ? 'high' : reflectionBucket >= 1 ? 'medium' : 'low';
-  const playbackImpact = scratchRisk === 'high' ? '높음' : scratchRisk === 'medium' || reflectionRisk === 'high' ? '주의' : '낮음';
-  const scratchRegions: ScratchRegion[] = makeFallbackScratchRegions(seed, scratchCount, scratchRisk);
   return {
     isRecord: hasMedia,
     source: 'fallback',
-    confidence: hasMedia ? Math.min(90, surfaceScore + 3) : 0,
-    surfaceScore,
-    surfaceGrade: gradeFromScore(surfaceScore),
-    scratchCount,
-    scratchRisk,
-    reflectionRisk,
-    scratchRegions,
+    analysisAvailable: false,
+    analysisUnavailableReason: hasMedia ? '표면 이미지를 정밀 분석하지 못했습니다.' : '표면 이미지 또는 동영상이 없습니다.',
+    confidence: 0,
+    surfaceScore: 0,
+    surfaceGrade: undefined,
+    scratchCount: 0,
+    scratchRisk: null,
+    reflectionRisk: null,
+    scratchRegions: [],
     scratchDetails: {
-      displayedRegions: scratchRegions.length,
-      highSeverity: scratchRegions.filter(region => region.severity === 'high').length,
-      mediumSeverity: scratchRegions.filter(region => region.severity === 'medium').length,
-      lowSeverity: scratchRegions.filter(region => region.severity === 'low').length,
+      displayedRegions: 0,
+      highSeverity: 0,
+      mediumSeverity: 0,
+      lowSeverity: 0,
       reflectionRatio: null,
       blurVariance: null,
       exposure: null,
@@ -715,10 +759,10 @@ export function recognizeLpImage(dataUrl: string, mediaType: 'image' | 'video' =
       centerHoleConfidence: null,
       detectedDisc: hasMedia,
     },
-    dustOrReflectionNote: hasMedia ? '로컬 fallback 결과입니다. 강한 반사는 스크래치처럼 보일 수 있습니다.' : '표면 이미지 또는 동영상을 추가해 주세요.',
-    playbackImpact,
+    dustOrReflectionNote: hasMedia ? '분석 불가 상태입니다. 밝은 환경에서 정면 사진을 다시 촬영해 주세요.' : '표면 이미지 또는 동영상을 추가해 주세요.',
+    playbackImpact: null,
     signals: hasMedia
-      ? [`${mediaType === 'video' ? '동영상' : '이미지'}를 표면 상태 감정 참고 자료로 처리했습니다.`, `스크래치 후보 ${scratchCount}개, 반사 위험 ${reflectionRisk}입니다.`]
+      ? [`${mediaType === 'video' ? '동영상' : '이미지'}를 받았지만 정밀 스크래치 분석은 완료되지 않았습니다.`]
       : ['아직 표면 이미지나 동영상이 없습니다.'],
   };
 }
@@ -1015,7 +1059,7 @@ async function decodeAudioFile(file: File) {
   }
 }
 
-function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: number, label: 'ambient' | 'good' | 'noisy'): BrowserAudioSample {
+function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: number, label: AudioSampleLabel): BrowserAudioSample {
   const sampleRate = buffer.sampleRate;
   const length = buffer.length;
   const channels = buffer.numberOfChannels;
@@ -1037,10 +1081,12 @@ function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: 
   let clipped = 0;
   let diffSum = 0;
   const frameRmsDb: number[] = [];
+  const highFrequencyFrameRatios: number[] = [];
   const frameSize = Math.min(4096, Math.max(1024, Math.round(sampleRate * 0.046)));
   const hop = Math.max(512, Math.round(frameSize / 2));
   for (let start = 0; start < length; start += hop) {
     let framePower = 0;
+    let frameDiffSum = 0;
     let count = 0;
     for (let index = start; index < Math.min(length, start + frameSize); index += 1) {
       const value = mono[index];
@@ -1048,11 +1094,19 @@ function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: 
       peak = Math.max(peak, abs);
       power += value * value;
       if (abs > 0.985) clipped += 1;
-      if (index > 0) diffSum += Math.abs(value - mono[index - 1]);
+      if (index > 0) {
+        const delta = Math.abs(value - mono[index - 1]);
+        diffSum += delta;
+        frameDiffSum += delta;
+      }
       framePower += value * value;
       count += 1;
     }
-    if (count) frameRmsDb.push(dbFromAmplitude(Math.sqrt(framePower / count)));
+    if (count) {
+      const frameRms = Math.sqrt(framePower / count);
+      frameRmsDb.push(dbFromAmplitude(frameRms));
+      highFrequencyFrameRatios.push(clamp(frameDiffSum / count / Math.max(0.0001, frameRms), 0, 2.5));
+    }
   }
 
   const rms = Math.sqrt(power / Math.max(1, length));
@@ -1061,13 +1115,26 @@ function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: 
   const durationSeconds = length / sampleRate;
   const clippingRatio = clipped / Math.max(1, length);
   const highFrequencyNoise = clamp(diffSum / Math.max(1, length) / Math.max(0.0001, rms), 0, 1.6);
+  const highFrequencyMedian = percentile(highFrequencyFrameRatios, 0.5);
+  const highFrequencyMad = percentile(highFrequencyFrameRatios.map(value => Math.abs(value - highFrequencyMedian)), 0.5);
+  const spectralIssueThreshold = Math.max(0.7, highFrequencyMedian + highFrequencyMad * 4.0);
+  const frameSeconds = hop / sampleRate;
+  const spectralIssueSummary = summarizeIssueFrames(
+    highFrequencyFrameRatios.map(value => label !== 'ambient' && value >= spectralIssueThreshold),
+    frameSeconds,
+  );
+  const spectralIssueDurationRatio = durationSeconds ? spectralIssueSummary.durationSeconds / durationSeconds : 0;
+  const spectralIssueRate = durationSeconds ? spectralIssueSummary.count / durationSeconds * 60 : 0;
+  const spectralCountPenalty = label === 'ambient' ? 0 : clamp(spectralIssueRate * 0.4, 0, 14);
+  const spectralDurationPenalty = label === 'ambient' ? 0 : clamp(spectralIssueDurationRatio * 12, 0, 4);
+  const spectralPenalty = spectralCountPenalty + spectralDurationPenalty;
   let clickCount = 0;
   let lastClickIndex = -sampleRate;
-  const clickThreshold = Math.max(0.28, rms * 6.5);
+  const clickThreshold = Math.max(0.34, rms * 7.4);
   const scanStep = Math.max(1, Math.floor(length / 360000));
   for (let index = scanStep; index < length; index += scanStep) {
     const diff = Math.abs(mono[index] - mono[index - scanStep]);
-    if (diff > clickThreshold && Math.abs(mono[index]) > rms * 2.2 && index - lastClickIndex > sampleRate * 0.035) {
+    if (diff > clickThreshold && Math.abs(mono[index]) > rms * 2.6 && index - lastClickIndex > sampleRate * 0.045) {
       clickCount += 1;
       lastClickIndex = index;
     }
@@ -1076,108 +1143,154 @@ function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: 
   const channelImbalanceDb = channelRms.length >= 2
     ? Math.abs(dbFromAmplitude(channelRms[0]) - dbFromAmplitude(channelRms[1]))
     : 0;
-  const noisePenalty = clamp((noiseFloorDb + 58) * 1.25, 0, 30);
-  const clickPenalty = clamp(clicksPerMinute * 0.72, 0, 28);
-  const dynamicPenalty = dynamicRangeDb < 10 ? (10 - dynamicRangeDb) * 1.4 : 0;
-  const clippingPenalty = clippingRatio > 0.0008 ? clamp(clippingRatio * 9000, 0, 18) : 0;
-  const imbalancePenalty = channelImbalanceDb > 2.5 ? clamp((channelImbalanceDb - 2.5) * 2.2, 0, 10) : 0;
-  const roughnessPenalty = label === 'ambient' ? 0 : clamp((highFrequencyNoise - 0.32) * 18, 0, 10);
-  const rawScore = Math.round(clamp(94 - noisePenalty - clickPenalty - dynamicPenalty - clippingPenalty - imbalancePenalty - roughnessPenalty, 35, 97));
-  const scratchRisk = rawScore >= 82 && clicksPerMinute < 8 ? 'low' : rawScore >= 68 ? 'medium' : 'high';
-  const estimatedNoiseLevel = noiseFloorDb < -55 ? 'low' : noiseFloorDb < -42 ? 'medium' : 'high';
-  const clippingRisk = clippingRatio > 0.006 ? 'high' : clippingRatio > 0.001 ? 'medium' : 'low';
-
+  const rawScore = label === 'ambient' ? 0 : audioScoreFromClicks(clickCount, durationSeconds);
   return {
     filename: file.name,
     requestedSeconds,
     durationSeconds: round(durationSeconds, 1),
     score: label === 'ambient' ? undefined : rawScore,
     rawScore,
-    estimatedNoiseLevel,
-    scratchRisk,
-    usableForListingSample: label === 'good' && rawScore >= 78 && clippingRisk !== 'high',
+    estimatedNoiseLevel: null,
+    scratchRisk: null,
+    usableForListingSample: label !== 'ambient' && rawScore >= 70,
     clickCount,
     clicksPerMinute: round(clicksPerMinute),
     noiseFloorDb: round(noiseFloorDb),
     adjustedNoiseFloorDb: null,
     dynamicRangeDb: round(dynamicRangeDb),
-    clippingRisk,
+    clippingRisk: null,
     clippingRatio: round(clippingRatio, 4),
     channelImbalanceDb: round(channelImbalanceDb),
     peakDb: round(dbFromAmplitude(peak)),
     rmsDb: round(dbFromAmplitude(rms)),
     transientDensity: round(clicksPerMinute / 60, 3),
     highFrequencyNoise: round(highFrequencyNoise, 3),
+    spectralIssueCount: spectralIssueSummary.count,
+    spectralIssueDurationSeconds: round(spectralIssueSummary.durationSeconds, 2),
+    spectralIssueRate: round(spectralIssueRate, 1),
+    spectralIssueDurationRatio: round(spectralIssueDurationRatio, 3),
+    spectralPenalty: round(spectralPenalty, 1),
+    problemFrequencyRangeHz: AUDIO_PROBLEM_FREQUENCY_RANGE_HZ,
     noisePower: 10 ** (noiseFloorDb / 10),
   };
 }
 
-async function analyzeAudioSamplesInBrowser(files: { good?: File; noisy?: File; ambient?: File }): Promise<AudioAnalysisResult | null> {
-  const [goodBuffer, noisyBuffer, ambientBuffer] = await Promise.all([
-    files.good ? decodeAudioFile(files.good).catch(() => null) : Promise.resolve(null),
-    files.noisy ? decodeAudioFile(files.noisy).catch(() => null) : Promise.resolve(null),
+async function analyzeAudioSamplesInBrowser(files: AudioAnalysisFiles): Promise<AudioAnalysisResult | null> {
+  const primaryFile = files.sample || files.good || files.noisy;
+  if (!primaryFile) return null;
+
+  const [primaryBuffer, ambientBuffer] = await Promise.all([
+    decodeAudioFile(primaryFile).catch(() => null),
     files.ambient ? decodeAudioFile(files.ambient).catch(() => null) : Promise.resolve(null),
   ]);
-  const goodSample = files.good && goodBuffer ? analyzeDecodedAudio(files.good, goodBuffer, 20, 'good') : null;
-  const noisySample = files.noisy && noisyBuffer ? analyzeDecodedAudio(files.noisy, noisyBuffer, 15, 'noisy') : null;
+  const audioSample = primaryBuffer ? analyzeDecodedAudio(primaryFile, primaryBuffer, MIN_AUDIO_ANALYSIS_SECONDS, 'sample') : null;
   const ambientSample = files.ambient && ambientBuffer ? analyzeDecodedAudio(files.ambient, ambientBuffer, 5, 'ambient') : null;
-  if (!goodSample && !noisySample) return null;
+  if (!audioSample) return null;
 
   const ambientDb = ambientSample?.noiseFloorDb ?? null;
-  if (goodSample) goodSample.adjustedNoiseFloorDb = subtractNoiseFloorDb(goodSample.noiseFloorDb, ambientDb);
-  if (noisySample) noisySample.adjustedNoiseFloorDb = subtractNoiseFloorDb(noisySample.noiseFloorDb, ambientDb);
-  const weightedScore = goodSample && noisySample
-    ? goodSample.rawScore * 0.68 + noisySample.rawScore * 0.24 + (ambientSample ? clamp(90 - Math.max(0, (ambientSample.noiseFloorDb || -60) + 48), 55, 92) * 0.08 : 0)
-    : (goodSample?.rawScore || noisySample?.rawScore || 0);
-  const audioScore = Math.round(clamp(weightedScore - (!ambientSample ? 2 : 0), 35, 97));
-  const clickCount = (goodSample?.clickCount || 0) + Math.round((noisySample?.clickCount || 0) * 0.55);
-  const noiseFloorDb = goodSample?.noiseFloorDb ?? noisySample?.noiseFloorDb ?? null;
+  audioSample.adjustedNoiseFloorDb = subtractNoiseFloorDb(audioSample.noiseFloorDb, ambientDb);
+  const clickCount = audioSample.clickCount || 0;
+  const durationSeconds = Number(audioSample.durationSeconds || 0);
+  const noiseFloorDb = audioSample.noiseFloorDb ?? null;
   const adjustedNoiseFloorDb = subtractNoiseFloorDb(noiseFloorDb, ambientDb);
-  const dynamicRangeDb = goodSample?.dynamicRangeDb ?? noisySample?.dynamicRangeDb ?? null;
-  const clippingRisk = [goodSample?.clippingRisk, noisySample?.clippingRisk].includes('high')
-    ? 'high'
-    : [goodSample?.clippingRisk, noisySample?.clippingRisk].includes('medium') ? 'medium' : 'low';
-  const playbackRisk = audioScore >= 82 && clippingRisk !== 'high' ? 'low' : audioScore >= 68 ? 'medium' : 'high';
+  const dynamicRangeDb = audioSample.dynamicRangeDb ?? null;
+  const analyzedSamples = [audioSample];
+  const spectralIssueCount = analyzedSamples.reduce((sum, sample) => sum + Number(sample.spectralIssueCount || 0), 0);
+  const spectralIssueDurationSeconds = analyzedSamples.reduce((sum, sample) => sum + Number(sample.spectralIssueDurationSeconds || 0), 0);
+  const spectralTotalDurationSeconds = analyzedSamples.reduce((sum, sample) => sum + Number(sample.durationSeconds || 0), 0);
+  const spectralIssueRate = spectralTotalDurationSeconds ? spectralIssueCount / spectralTotalDurationSeconds * 60 : 0;
+  const spectralIssueDurationRatio = spectralTotalDurationSeconds ? spectralIssueDurationSeconds / spectralTotalDurationSeconds : 0;
+  const spectralPenalty = analyzedSamples.reduce((sum, sample) => sum + Number(sample.spectralPenalty || 0), 0) / Math.max(1, analyzedSamples.length);
+  if (durationSeconds < MIN_AUDIO_ANALYSIS_SECONDS) {
+    return {
+      source: 'browser',
+      analysisAvailable: false,
+      analysisUnavailableReason: `음질 샘플은 최소 ${MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.`,
+      audioScore: null,
+      audioGrade: null,
+      lpConditionScore: null,
+      lpConditionGrade: null,
+      environmentScore: null,
+      environmentGrade: null,
+      playbackRisk: null,
+      clickCount,
+      noiseFloorDb,
+      ambientNoiseFloorDb: ambientDb,
+      adjustedNoiseFloorDb,
+      dynamicRangeDb,
+      clippingRisk: null,
+      channelImbalanceDb: audioSample.channelImbalanceDb ?? null,
+      highFrequencyNoise: audioSample.highFrequencyNoise ?? null,
+      spectralIssueCount,
+      spectralIssueDurationSeconds: round(spectralIssueDurationSeconds, 2),
+      spectralIssueRate: round(spectralIssueRate, 1),
+      spectralIssueDurationRatio: round(spectralIssueDurationRatio, 3),
+      spectralPenalty: round(spectralPenalty, 1),
+      problemFrequencyRangeHz: AUDIO_PROBLEM_FREQUENCY_RANGE_HZ,
+      analysisConfidence: 0,
+      warnings: [`음질 샘플이 ${round(durationSeconds, 1)}초라서 최소 ${MIN_AUDIO_ANALYSIS_SECONDS}초 기준을 충족하지 못했습니다.`],
+      audioSample,
+      goodSample: null,
+      noisySample: null,
+      ambientSample,
+      summary: `음질 샘플은 최소 ${MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.`,
+    };
+  }
+  const audioScore = audioScoreFromClicks(clickCount, durationSeconds);
   const warnings = [
     '서버 분석 대신 기기 내 Web Audio 분석을 사용했습니다.',
-    !ambientSample ? '주변 소음 기준 샘플이 없어 노이즈 보정 신뢰도가 낮습니다.' : '',
-    goodSample && goodSample.durationSeconds && goodSample.durationSeconds < 8 ? '좋은 구간 샘플이 짧습니다. 15초 이상이면 더 안정적입니다.' : '',
-    clippingRisk === 'high' ? '녹음 레벨이 높아 클리핑이 감지되었습니다. 볼륨을 낮춰 다시 녹음해 보세요.' : '',
+    spectralIssueRate >= 16 || spectralIssueCount >= 8 ? '클릭/팝 후보를 음질 점수에 반영했습니다.' : '',
   ].filter(Boolean);
-  const baseConfidence = Math.round(clamp((goodSample ? 40 : 0) + (noisySample ? 22 : 0) + (ambientSample ? 18 : 0) + (dynamicRangeDb || 0), 45, 92));
-  const analysisConfidence = ambientSample ? baseConfidence : Math.min(59, Math.max(35, baseConfidence - 16));
+  const analysisConfidence = Math.round(clamp(58 + Math.min(22, durationSeconds / 3) + (dynamicRangeDb || 0), 45, 96));
+  const channelImbalanceDb = audioSample.channelImbalanceDb ?? null;
 
   return {
     source: 'browser',
+    analysisAvailable: true,
     audioScore,
     audioGrade: gradeFromScore(audioScore),
-    playbackRisk,
+    lpConditionScore: audioScore,
+    lpConditionGrade: gradeFromScore(audioScore),
+    environmentScore: null,
+    environmentGrade: null,
+    playbackRisk: null,
     clickCount,
     noiseFloorDb,
     ambientNoiseFloorDb: ambientDb,
     adjustedNoiseFloorDb,
     dynamicRangeDb,
-    clippingRisk,
-    channelImbalanceDb: goodSample?.channelImbalanceDb ?? noisySample?.channelImbalanceDb ?? null,
-    highFrequencyNoise: goodSample?.highFrequencyNoise ?? noisySample?.highFrequencyNoise ?? null,
+    clippingRisk: null,
+    channelImbalanceDb,
+    highFrequencyNoise: audioSample.highFrequencyNoise ?? null,
+    spectralIssueCount,
+    spectralIssueDurationSeconds: round(spectralIssueDurationSeconds, 2),
+    spectralIssueRate: round(spectralIssueRate, 1),
+    spectralIssueDurationRatio: round(spectralIssueDurationRatio, 3),
+    spectralPenalty: round(spectralPenalty, 1),
+    problemFrequencyRangeHz: AUDIO_PROBLEM_FREQUENCY_RANGE_HZ,
     analysisConfidence,
     warnings,
-    goodSample,
-    noisySample,
+    audioSample,
+    goodSample: null,
+    noisySample: null,
     ambientSample,
-    summary: `Web Audio 분석 기준 ${gradeFromScore(audioScore)} 등급, 재생 위험은 ${playbackRisk === 'low' ? '낮음' : playbackRisk === 'medium' ? '주의' : '높음'}입니다. 클릭/팝 후보와 노이즈 플로어를 함께 반영했습니다.`,
+    summary: `Web Audio 분석 기준 ${gradeFromScore(audioScore)} 등급, ${audioScore}점입니다. 감점은 뚝소리 후보 횟수와 녹음 시간만 반영했습니다.`,
   };
 }
 
-function fallbackAudioAnalysis(files: { good?: File; noisy?: File; ambient?: File }, reason = '오디오 파일을 직접 해석하지 못해 파일 정보 기반 임시 점수를 표시합니다.'): AudioAnalysisResult {
-  const sizeSeed = (files.good?.size || 0) + (files.noisy?.size || 0) + (files.ambient?.size || 0);
-  const audioScore = Math.max(58, Math.min(84, 78 - Math.round(sizeSeed % 13)));
+function fallbackAudioAnalysis(files: AudioAnalysisFiles, reason = '오디오 파일을 직접 해석하지 못해 분석 불가로 분리했습니다.'): AudioAnalysisResult {
   return {
-    source: 'mock',
-    audioScore,
-    audioGrade: audioScore >= 82 ? 'VG+' : audioScore >= 72 ? 'VG' : 'G+',
-    playbackRisk: audioScore >= 82 ? 'low' : audioScore >= 70 ? 'medium' : 'high',
-    clickCount: Math.round(sizeSeed % 9),
+    source: 'fallback',
+    analysisAvailable: false,
+    analysisUnavailableReason: reason,
+    audioScore: null,
+    audioGrade: null,
+    lpConditionScore: null,
+    lpConditionGrade: null,
+    environmentScore: null,
+    environmentGrade: null,
+    playbackRisk: null,
+    clickCount: undefined,
     noiseFloorDb: null,
     ambientNoiseFloorDb: null,
     adjustedNoiseFloorDb: null,
@@ -1185,25 +1298,31 @@ function fallbackAudioAnalysis(files: { good?: File; noisy?: File; ambient?: Fil
     clippingRisk: null,
     channelImbalanceDb: null,
     highFrequencyNoise: null,
-    analysisConfidence: files.ambient ? 55 : 42,
-    warnings: [
-      reason,
-      files.ambient ? '주변음 기준 샘플은 저장되었지만 정밀 보정에는 사용하지 못했습니다.' : '주변음 기준 샘플이 없어 보수적으로 계산했습니다.',
-    ],
-    goodSample: files.good ? { filename: files.good.name, requestedSeconds: 30, score: audioScore, estimatedNoiseLevel: 'medium', scratchRisk: 'medium', usableForListingSample: audioScore >= 78 } : null,
-    noisySample: files.noisy ? { filename: files.noisy.name, requestedSeconds: 30, score: Math.max(50, audioScore - 8), estimatedNoiseLevel: 'medium', scratchRisk: 'medium', usableForListingSample: false } : null,
-    ambientSample: files.ambient ? { filename: files.ambient.name, requestedSeconds: 5, score: 0, estimatedNoiseLevel: 'unknown', scratchRisk: 'low', usableForListingSample: false } : null,
-    summary: '정밀 파형 해석이 불가능한 파일이라 임시 음질 점수를 표시합니다. WAV/M4A/WebM 파일로 다시 녹음하면 정확도가 올라갑니다.',
+    spectralIssueCount: null,
+    spectralIssueDurationSeconds: null,
+    spectralIssueRate: null,
+    spectralIssueDurationRatio: null,
+    spectralPenalty: null,
+    problemFrequencyRangeHz: null,
+    analysisConfidence: 0,
+    warnings: [reason],
+    audioSample: files.sample ? { filename: files.sample.name, requestedSeconds: MIN_AUDIO_ANALYSIS_SECONDS, estimatedNoiseLevel: null, scratchRisk: null, usableForListingSample: false } : null,
+    goodSample: files.good ? { filename: files.good.name, requestedSeconds: 30, estimatedNoiseLevel: null, scratchRisk: null, usableForListingSample: false } : null,
+    noisySample: files.noisy ? { filename: files.noisy.name, requestedSeconds: 30, estimatedNoiseLevel: null, scratchRisk: null, usableForListingSample: false } : null,
+    ambientSample: files.ambient ? { filename: files.ambient.name, requestedSeconds: 5, score: 0, estimatedNoiseLevel: null, scratchRisk: null, usableForListingSample: false } : null,
+    summary: '정밀 파형 해석이 불가능해 음질 점수와 등급을 표시하지 않습니다. WAV/M4A/WebM 파일로 다시 녹음해 주세요.',
   };
 }
 
-async function analyzeAudioSamplesOnServer(files: { good?: File; noisy?: File; ambient?: File }) {
+async function analyzeAudioSamplesOnServer(files: AudioAnalysisFiles) {
   const formData = new FormData();
-  const [good, noisy, ambient] = await Promise.all([
+  const [sample, good, noisy, ambient] = await Promise.all([
+    files.sample ? convertAudioFileForAnalysis(files.sample, 'audio-sample') : Promise.resolve(undefined),
     files.good ? convertAudioFileForAnalysis(files.good, 'good-section') : Promise.resolve(undefined),
     files.noisy ? convertAudioFileForAnalysis(files.noisy, 'bad-section') : Promise.resolve(undefined),
     files.ambient ? convertAudioFileForAnalysis(files.ambient, 'ambient') : Promise.resolve(undefined),
   ]);
+  if (sample) formData.append('audio_sample', sample);
   if (good) formData.append('good_sample', good);
   if (noisy) formData.append('noisy_sample', noisy);
   if (ambient) formData.append('ambient_sample', ambient);
@@ -1214,17 +1333,18 @@ async function analyzeAudioSamplesOnServer(files: { good?: File; noisy?: File; a
 
 function withAudioRecheckWarning(primary: AudioAnalysisResult, secondary: AudioAnalysisResult | null): AudioAnalysisResult {
   if (!secondary) return primary;
+  if (primary.analysisAvailable === false || secondary.analysisAvailable === false || primary.audioScore == null || secondary.audioScore == null) return primary;
   const warnings = [...(primary.warnings || [])];
   const scoreGap = Math.abs(Number(primary.audioScore || 0) - Number(secondary.audioScore || 0));
-  if (scoreGap >= 10 || (primary.playbackRisk && secondary.playbackRisk && primary.playbackRisk !== secondary.playbackRisk)) {
-    warnings.push(`서버와 기기 내 보조 분석 결과 차이가 있어 재확인을 권장합니다. 서버 ${primary.audioScore}점/${primary.playbackRisk || '-'}, 기기 ${secondary.audioScore}점/${secondary.playbackRisk || '-'}입니다.`);
+  if (scoreGap >= 10) {
+    warnings.push(`서버와 기기 내 보조 분석 결과 차이가 있어 재확인을 권장합니다. 서버 ${primary.audioScore}점, 기기 ${secondary.audioScore}점입니다.`);
   }
   return { ...primary, warnings };
 }
 
-export async function analyzeAudioSamples(files: { good?: File; noisy?: File; ambient?: File }): Promise<AudioAnalysisResult> {
-  if (!files.good && !files.noisy) {
-    return fallbackAudioAnalysis(files, '좋은 구간 또는 안 좋은 구간 녹음이 없어 정밀 분석을 실행할 수 없습니다.');
+export async function analyzeAudioSamples(files: AudioAnalysisFiles): Promise<AudioAnalysisResult> {
+  if (!files.sample && !files.good && !files.noisy) {
+    return fallbackAudioAnalysis(files, '음질 샘플 녹음이 없어 정밀 분석을 실행할 수 없습니다.');
   }
 
   const browserResultPromise = timeoutAfter(
@@ -1249,7 +1369,7 @@ export async function analyzeAudioSamples(files: { good?: File; noisy?: File; am
   } catch {
     const browserResult = await browserResultPromise;
     if (browserResult) return browserResult;
-    return fallbackAudioAnalysis(files, '기기 내 분석과 서버 분석이 모두 실패해 파일 정보 기반 임시 점수를 표시합니다.');
+    return fallbackAudioAnalysis(files, '기기 내 분석과 서버 분석이 모두 실패해 분석 불가로 분리했습니다.');
   }
 }
 
@@ -1276,10 +1396,6 @@ export async function fetchPriceRecommendation(params: {
   releaseId?: number;
   surfaceScore?: number;
   audioScore?: number;
-  jacketScore?: number;
-  scratchRisk?: string;
-  playbackRisk?: string;
-  jacketRisk?: string;
 }): Promise<PriceRecommendation> {
   const query = new URLSearchParams();
   if (params.catalogNumber) query.set('catalog_number', params.catalogNumber);
@@ -1288,10 +1404,6 @@ export async function fetchPriceRecommendation(params: {
   if (params.releaseId) query.set('release_id', String(params.releaseId));
   if (params.surfaceScore) query.set('surface_score', String(params.surfaceScore));
   if (params.audioScore) query.set('audio_score', String(params.audioScore));
-  if (params.jacketScore) query.set('jacket_score', String(params.jacketScore));
-  if (params.scratchRisk) query.set('scratch_risk', params.scratchRisk);
-  if (params.playbackRisk) query.set('playback_risk', params.playbackRisk);
-  if (params.jacketRisk) query.set('jacket_risk', params.jacketRisk);
   const serverRecommendation = (async () => {
     const response = await timeoutAfter(fetchApi(`/pricing/recommendation?${query.toString()}`, {}, 6500), 7500, 'Price recommendation timed out');
     if (!response.ok) throw new Error('Price recommendation failed');
@@ -1344,33 +1456,26 @@ function parseDiscogsPrice(value: unknown) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function directCondition(surfaceScore?: number, audioScore?: number, scratchRisk?: string, playbackRisk?: string) {
+function directCondition(surfaceScore?: number, audioScore?: number) {
   const surface = Number(surfaceScore || 72);
   const audio = Number(audioScore || 72);
   const combined = surface * 0.45 + audio * 0.55;
-  const highRisk = scratchRisk === 'high' || playbackRisk === 'high';
-  const mediumRisk = scratchRisk === 'medium' || playbackRisk === 'medium';
-  if (combined >= 88 && !highRisk && !mediumRisk) return 'Near Mint (NM or M-)';
-  if (combined >= 80 && !highRisk) return 'Very Good Plus (VG+)';
-  if (combined >= 68) return 'Very Good (VG)';
-  if (combined >= 55) return 'Good Plus (G+)';
-  return 'Good (G)';
+  if (combined >= 96) return 'Mint (M)';
+  if (combined >= 88) return 'Near Mint (NM or M-)';
+  if (combined >= 80) return 'Excellent (EX)';
+  if (combined >= 70) return 'Very Good Plus (VG+)';
+  if (combined >= 58) return 'Very Good (VG)';
+  if (combined >= 45) return 'Good (G)';
+  return 'Poor (P)';
 }
 
-function directQualityMultiplier(params: { surfaceScore?: number; audioScore?: number; jacketScore?: number; scratchRisk?: string; playbackRisk?: string; jacketRisk?: string }) {
+function directQualityMultiplier(params: { surfaceScore?: number; audioScore?: number }) {
   const surface = Number(params.surfaceScore || 72);
   const audio = Number(params.audioScore || 72);
-  const jacket = Number(params.jacketScore || 76);
   let multiplier = 1;
   if (surface >= 88 && audio >= 86) multiplier += 0.05;
-  if (surface < 70) multiplier -= 0.08;
-  if (audio < 72) multiplier -= 0.08;
-  if (params.scratchRisk === 'high' || params.playbackRisk === 'high') multiplier -= 0.12;
-  else if (params.scratchRisk === 'medium' || params.playbackRisk === 'medium') multiplier -= 0.05;
-  if (jacket >= 88) multiplier += 0.03;
-  else if (jacket < 68) multiplier -= 0.08;
-  if (params.jacketRisk === 'high') multiplier -= 0.06;
-  else if (params.jacketRisk === 'medium') multiplier -= 0.03;
+  if (surface < 58) multiplier -= 0.06;
+  if (audio < 58) multiplier -= 0.06;
   return clamp(multiplier, 0.62, 1.08);
 }
 
@@ -1381,10 +1486,6 @@ async function fetchDiscogsPriceRecommendationDirect(params: {
   releaseId?: number;
   surfaceScore?: number;
   audioScore?: number;
-  jacketScore?: number;
-  scratchRisk?: string;
-  playbackRisk?: string;
-  jacketRisk?: string;
 }): Promise<PriceRecommendation | null> {
   let releaseId = params.releaseId || 0;
   let releaseTitle = '';
@@ -1406,7 +1507,7 @@ async function fetchDiscogsPriceRecommendationDirect(params: {
 
   const marketplaceLow = clientCurrencyToKrw(amount, currency);
   const adjusted = Math.max(1000, Math.round((marketplaceLow * 0.96 * directQualityMultiplier(params)) / 1000) * 1000);
-  const condition = directCondition(params.surfaceScore, params.audioScore, params.scratchRisk, params.playbackRisk);
+  const condition = directCondition(params.surfaceScore, params.audioScore);
   return {
     recommended_price: adjusted,
     price_range: {
@@ -1431,7 +1532,7 @@ async function fetchDiscogsPriceRecommendationDirect(params: {
       priceSuggestionError: '서버 가격 추천이 지연되어 브라우저에서 Discogs 현재 판매가를 직접 확인했습니다. 판매 이력 가격표는 서버 인증이 필요합니다.',
       conditionPrices: [],
     },
-    reason: `Discogs 현재 판매 최저가와 표면 ${params.surfaceScore || '-'}점, 음질 ${params.audioScore || '-'}점, 자켓 ${params.jacketScore || '-'}점을 함께 반영했습니다.`,
+    reason: `Discogs 현재 판매 최저가와 표면 ${params.surfaceScore || '-'}점, 음질 ${params.audioScore || '-'}점을 함께 반영했습니다.`,
   };
 }
 

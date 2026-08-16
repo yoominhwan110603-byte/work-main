@@ -121,7 +121,7 @@ const previous = () => goTo(activeIndex.value - 1);
 const next = () => goTo(activeIndex.value + 1);
 
 const openActive = () => {
-  if (activeCollection.value) router.push(`/collection/${activeCollection.value.id}`);
+  if (activeCollection.value) router.push(`/app/collection/${activeCollection.value.id}`);
 };
 
 const handleSlotClick = (index: number) => {

@@ -22,6 +22,7 @@ public class MainActivity extends BridgeActivity implements ModifiedMainActivity
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(AppSettingsPlugin.class);
         registerPlugin(NativeAudioRecorderPlugin.class);
+        registerPlugin(NativeFrequencyAnalyzerPlugin.class);
         super.onCreate(savedInstanceState);
 
         Window window = getWindow();

@@ -1,7 +1,7 @@
 <template>
   <main v-if="collection" class="size-full bg-gray-50 text-gray-900 flex flex-col">
     <header class="flex items-center border-b bg-white px-4 py-4">
-      <button class="rounded-full p-2 active:bg-gray-100" @click="router.back()"><ArrowLeft :size="24" /></button>
+      <button class="rounded-full p-2 active:bg-gray-100" @click="goBackOr(router, `/app/collection/${collection.id}`)"><ArrowLeft :size="24" /></button>
       <h1 class="ml-3 text-lg font-semibold">컬렉션 구매 제안</h1>
     </header>
 
@@ -41,7 +41,7 @@
 
   <main v-else class="size-full bg-white p-6 text-center">
     <p class="text-gray-600">컬렉션을 찾을 수 없습니다.</p>
-    <button class="mt-4 rounded-lg bg-blue-600 px-4 py-3 text-white" @click="router.push('/app/profile')">프로필로</button>
+    <button class="mt-4 rounded-lg bg-blue-600 px-4 py-3 text-white" @click="router.push('/app/collection')">컬렉션으로</button>
   </main>
 </template>
 
@@ -51,6 +51,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft } from 'lucide-vue-next';
 import { makeOneToOneChatId } from '@/features/transaction/services/chatClient';
 import { fetchApi } from '@/shared/services/api';
+import { goBackOr } from '@/shared/services/navigation';
 import { useAppStore } from '@/shared/stores/appStore';
 import VinylCover from '@/shared/components/VinylCover.vue';
 

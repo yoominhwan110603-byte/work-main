@@ -71,7 +71,7 @@
         <button class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button">
           <ImageIcon :size="16" /> 이미지
         </button>
-        <button v-if="!isCollectionContext" class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button" @click="router.push(`/transaction/offer/${album.id}`)">
+        <button v-if="!isCollectionContext && !isSeller" class="flex items-center gap-1 px-3 py-2 bg-gray-100 rounded-lg text-sm whitespace-nowrap" type="button" @click="router.push(`/transaction/offer/${album.id}`)">
           <DollarSign :size="16" /> 가격 제안
         </button>
       </div>
@@ -184,7 +184,7 @@ const completionButtonClass = (checked: boolean) => [
 
 const formatTime = (timestamp: string) => new Date(timestamp).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 const openContext = () => {
-  if (collection.value) router.push(`/collection/${collection.value.id}`);
+  if (collection.value) router.push(`/app/collection/${collection.value.id}`);
   else router.push(`/app/album/${album.value.id}`);
 };
 

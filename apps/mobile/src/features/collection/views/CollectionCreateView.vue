@@ -130,23 +130,13 @@
             <input v-model="form.audioScore" type="number" inputmode="numeric" min="0" max="100" class="w-full rounded-lg border px-4 py-3" placeholder="88" />
           </div>
         </div>
-        <div class="grid grid-cols-2 gap-2">
-          <label class="flex items-center gap-2 rounded-lg border px-3 py-3 text-sm">
-            <input v-model="form.isRare" type="checkbox" />
-            <span>희귀반</span>
-          </label>
-          <label class="flex items-center gap-2 rounded-lg border px-3 py-3 text-sm">
-            <input v-model="form.isFirstPress" type="checkbox" />
-            <span>초반 추정</span>
-          </label>
-        </div>
         <div>
           <label class="mb-2 block text-sm">메모</label>
           <textarea v-model="form.notes" class="min-h-32 w-full rounded-lg border px-4 py-3" placeholder="보관 상태나 개인 메모를 남겨 주세요." />
         </div>
         <div>
           <label class="mb-2 block text-sm">태그</label>
-          <input v-model="form.tags" class="w-full rounded-lg border px-4 py-3" placeholder="#재즈 #초반 #소장반" />
+          <input v-model="form.tags" class="w-full rounded-lg border px-4 py-3" placeholder="#재즈 #리이슈 #소장반" />
         </div>
       </section>
 
@@ -180,7 +170,7 @@ const router = useRouter();
 const route = useRoute();
 const store = useAppStore();
 const editingId = computed(() => String(route.params.id || ''));
-const grades = ['NM', 'VG+', 'VG', 'G+', 'G'];
+const grades = ['M', 'NM', 'EX', 'VG+', 'VG', 'G', 'P'];
 const saving = ref(false);
 const discogsSearching = ref(false);
 const discogsMessage = ref('');
@@ -224,7 +214,7 @@ const tagList = () => form.tags.replace(/,/g, ' ').split(/\s+/).map(tag => tag.t
 
 const goBack = () => {
   if (window.history.length > 1) router.back();
-  else router.push('/app');
+  else router.push('/app/collection');
 };
 
 const clearDiscogsSelection = () => {
@@ -307,7 +297,7 @@ const saveCollection = async () => {
     tags: tagList(), images: [form.discogsCoverImageUrl, recordImage.value].filter(Boolean),
     coverImageDataUrl: undefined, recordImageDataUrl: recordImage.value || undefined,
     audioGrade: form.audioGrade || undefined, audioScore: Number(form.audioScore) || undefined,
-    isRare: form.isRare, isFirstPress: form.isFirstPress,
+    isRare: false, isFirstPress: false,
     audioSamples: {
       ...(goodSample.value ? { good: goodSample.value } : {}),
       ...(noisySample.value ? { noisy: noisySample.value } : {}),
@@ -320,7 +310,7 @@ const saveCollection = async () => {
     alert(result.message || '컬렉션 저장에 실패했습니다.');
     return;
   }
-  router.push(`/collection/${result.collection.id}`);
+  router.push(`/app/collection/${result.collection.id}`);
 };
 
 onMounted(() => {
@@ -338,7 +328,7 @@ onMounted(() => {
     genre: collection.genre,
     purchasePrice: collection.purchasePrice ? String(collection.purchasePrice) : '', visibility: collection.visibility,
     audioGrade: collection.audioGrade || '', audioScore: collection.audioScore ? String(collection.audioScore) : '',
-    isRare: collection.isRare, isFirstPress: collection.isFirstPress, notes: collection.notes, tags: collection.tags.join(' '),
+    isRare: false, isFirstPress: false, notes: collection.notes, tags: collection.tags.join(' '),
   });
   recordImage.value = collection.recordImageDataUrl || '';
   goodSample.value = collection.audioSamples?.good || null;

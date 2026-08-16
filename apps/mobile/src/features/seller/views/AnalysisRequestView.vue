@@ -38,22 +38,6 @@
         </div>
       </section>
 
-      <section v-if="imagePreview" class="rounded-lg border p-4 space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-base">자켓 상태 분석</h2>
-          <span class="px-2 py-1 rounded text-xs bg-emerald-100 text-emerald-700">{{ jacketRecognition.jacketGrade }} · {{ jacketRecognition.jacketScore }}점</span>
-        </div>
-        <div class="grid grid-cols-3 gap-2 text-xs">
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">테두리</p><p>{{ riskLabel(jacketRecognition.edgeWearRisk) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">모서리</p><p>{{ riskLabel(jacketRecognition.cornerWearRisk) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">반사</p><p>{{ formatPercent(jacketRecognition.glareRatio) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">색 바램</p><p>{{ riskLabel(jacketRecognition.colorFadeRisk) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">선명도</p><p>{{ jacketRecognition.blurVariance?.toFixed(1) || '-' }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">신뢰도</p><p>{{ jacketRecognition.confidence }}점</p></div>
-        </div>
-        <p class="rounded-lg bg-emerald-50 p-3 text-xs text-emerald-900">{{ jacketRecognition.recommendation }}</p>
-      </section>
-
       <section class="space-y-3">
         <h2 class="text-base">음반 이미지/동영상</h2>
         <div v-if="recordPreview" class="relative aspect-square overflow-hidden rounded-lg bg-gray-100">
@@ -116,27 +100,16 @@
         <div>
           <div class="flex justify-between text-sm mb-2">
             <span>표면 상태 점수</span>
-            <span class="text-blue-600">{{ recognition.surfaceScore || recognition.confidence }}점</span>
+            <span class="text-blue-600">{{ surfaceScoreText }}</span>
           </div>
           <div class="h-2 rounded-full bg-gray-200 overflow-hidden">
-            <div class="h-full bg-blue-600" :style="{ width: `${recognition.surfaceScore || recognition.confidence}%` }"></div>
+            <div class="h-full bg-blue-600" :style="{ width: `${surfaceProgress}%` }"></div>
           </div>
         </div>
         <div class="grid grid-cols-2 gap-2 text-xs">
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">스크래치 후보</p><p>{{ recognition.scratchCount }}개</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">표시 위치</p><p>{{ scratchRegions.length }}곳</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">강한 후보</p><p>{{ scratchDetails.highSeverity || 0 }}곳</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">반사 위험</p><p>{{ riskLabel(recognition.reflectionRisk) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">먼지/입자</p><p>{{ formatPercent(scratchDetails.dustRatio) }}</p></div>
-          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">홈 대비</p><p>{{ formatPercent(scratchDetails.grooveContrast) }}</p></div>
+          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">스크래치 등급</p><p>{{ surfaceGradeText }}</p></div>
+          <div class="rounded-lg bg-gray-50 p-2"><p class="text-gray-500">스크래치 점수</p><p>{{ surfaceScoreText }}</p></div>
         </div>
-        <p class="rounded-lg bg-yellow-50 p-3 text-xs text-yellow-900">{{ recognition.dustOrReflectionNote }}</p>
-        <ul class="space-y-1 text-sm text-gray-700">
-          <li v-for="signal in recognition.signals" :key="signal" class="flex gap-2">
-            <Check :size="15" class="text-green-600 mt-0.5 shrink-0" />
-            <span>{{ signal }}</span>
-          </li>
-        </ul>
       </section>
 
       <section class="space-y-3">
@@ -176,15 +149,12 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { ArrowLeft, Camera, Check, ImagePlus, ScanLine, Video } from 'lucide-vue-next';
+import { ArrowLeft, Camera, ImagePlus, ScanLine, Video } from 'lucide-vue-next';
 import {
-  analyzeJacketImage,
   analyzeLpMedia,
-  recognizeJacketImage,
   recognizeLpImage,
   saveCoverAnalysisReport,
   type AudioAnalysisResult,
-  type JacketRecognition,
   type LpRecognition,
 } from '@/features/seller/services/analysis';
 import {
@@ -204,7 +174,6 @@ const catalogNumber = ref(String(draftForm.catalogNumber || ''));
 const imagePreview = ref(draftImages[0] || '');
 const recordPreview = ref(draftImages[1] || '');
 const recordVideoPreview = ref(String(draft?.recordVideoDataUrl || ''));
-const jacketRecognition = ref<JacketRecognition>(recognizeJacketImage(imagePreview.value));
 const recognition = ref<LpRecognition>(recognizeLpImage(recordPreview.value || recordVideoPreview.value));
 const candidates = ref<AlbumCandidate[]>([]);
 const selectedCandidateId = ref('');
@@ -216,11 +185,21 @@ const fallbackCandidate = computed(() => selectedCandidate.value || findAlbumCan
 const pressing = computed(() => createPressingInfo(fallbackCandidate.value));
 const recordMediaPreview = computed(() => recordPreview.value || recordVideoPreview.value);
 const scratchRegions = computed(() => recognition.value.scratchRegions || []);
-const scratchDetails = computed(() => recognition.value.scratchDetails || {});
+const isSurfaceAnalysisUnavailable = computed(() => recognition.value.analysisAvailable === false || recognition.value.source === 'fallback');
+const surfaceProgress = computed(() => isSurfaceAnalysisUnavailable.value ? 0 : recognition.value.surfaceScore || recognition.value.confidence || 0);
+const surfaceScoreText = computed(() => isSurfaceAnalysisUnavailable.value ? '분석 불가' : `${surfaceProgress.value}점`);
+const surfaceGradeText = computed(() => isSurfaceAnalysisUnavailable.value ? '분석 불가' : recognition.value.surfaceGrade || gradeFromScore(surfaceProgress.value));
 const canAnalyze = computed(() => Boolean(recordMediaPreview.value && catalogNumber.value.trim() && selectedCandidate.value));
 const scratchColor = (severity?: string) => severity === 'high' ? '#ef4444' : severity === 'medium' ? '#f97316' : '#facc15';
-const riskLabel = (risk?: 'low' | 'medium' | 'high' | string) => risk === 'high' ? '높음' : risk === 'medium' ? '주의' : '낮음';
-const formatPercent = (value?: number | null) => typeof value === 'number' ? `${(value * 100).toFixed(1)}%` : '-';
+function gradeFromScore(score: number) {
+  if (score >= 96) return 'M';
+  if (score >= 88) return 'NM';
+  if (score >= 80) return 'EX';
+  if (score >= 70) return 'VG+';
+  if (score >= 58) return 'VG';
+  if (score >= 45) return 'G';
+  return 'P';
+}
 const recordVideoGuides = [
   '밝은 곳에서 LP 표면 전체가 보이도록 8~12초 정도 천천히 촬영하세요.',
   '휴대폰을 비스듬히 살짝 움직여 반사 위치가 이동하게 찍으면 스크래치와 먼지 구분이 쉬워집니다.',
@@ -253,7 +232,6 @@ const handleImage = async (event: Event) => {
   const file = (event.target as HTMLInputElement).files?.[0];
   if (!file) return;
   imagePreview.value = await readFileAsDataUrl(file);
-  jacketRecognition.value = await analyzeJacketImage(imagePreview.value);
   if (!catalogNumber.value.trim()) catalogNumber.value = 'CL 1355';
   await refreshCandidates();
 };
@@ -274,7 +252,6 @@ const handleRecordVideo = async (event: Event) => {
 
 const clearImage = () => {
   imagePreview.value = '';
-  jacketRecognition.value = recognizeJacketImage('');
 };
 
 const clearRecordImage = () => {
@@ -304,14 +281,12 @@ const startAnalysis = () => {
     selectedCandidate: selectedCandidate.value,
     pressing: pressing.value,
     audio: draft?.audioAnalysis as AudioAnalysisResult | undefined,
-    jacket: jacketRecognition.value,
   });
   router.push('/sell/analysis/result');
 };
 
 onMounted(async () => {
   if (imagePreview.value && !catalogNumber.value.trim()) catalogNumber.value = 'CL 1355';
-  if (imagePreview.value) jacketRecognition.value = await analyzeJacketImage(imagePreview.value);
   if (recordPreview.value) {
     recognition.value = await analyzeLpMedia(recordPreview.value, 'image');
   } else if (recordVideoPreview.value) {

@@ -28,33 +28,19 @@
       </section>
 
       <section v-if="group" class="px-3 py-4 sm:px-4">
-        <div v-if="qualityBuckets.length" class="mb-4 space-y-2">
-          <p class="text-sm font-medium text-gray-800">품질별 상품구분</p>
-          <div class="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              :class="['rounded-lg border px-3 py-2 text-left', activeQuality === '' ? 'border-blue-600 bg-blue-50 text-blue-700' : 'bg-white text-gray-700']"
-              @click="activeQuality = ''"
-            >
-              <span class="block text-sm font-medium">전체</span>
-              <span class="mt-0.5 block text-xs text-gray-500">{{ group.listingCount }}개 매물</span>
-            </button>
-            <button
-              v-for="bucket in qualityBuckets"
-              :key="bucket.key"
-              type="button"
-              :class="['rounded-lg border px-3 py-2 text-left', activeQuality === bucket.key ? 'border-blue-600 bg-blue-50 text-blue-700' : 'bg-white text-gray-700']"
-              @click="activeQuality = activeQuality === bucket.key ? '' : bucket.key"
-            >
-              <span class="block text-sm font-medium">{{ bucket.label }}</span>
-              <span class="mt-0.5 block text-xs text-gray-500">{{ bucket.listingCount }}개 · {{ bucket.description }}</span>
-            </button>
-          </div>
-        </div>
+        <label v-if="qualityBuckets.length" class="mb-4 block rounded-lg border border-[#8b5e3c] bg-[#704326] p-3">
+          <span class="mb-2 block text-sm font-medium text-[#fff8e7]">앨범 등급</span>
+          <select v-model="activeQuality" class="w-full rounded-lg border border-[#b78357] bg-[#5b351f] px-3 py-3 text-sm text-[#fff8e7] outline-none">
+            <option value="">전체 {{ group.listingCount }}개</option>
+            <option v-for="bucket in qualityBuckets" :key="bucket.key" :value="bucket.key">
+              {{ bucket.label }} · {{ bucket.listingCount }}개
+            </option>
+          </select>
+        </label>
 
         <div class="mb-3 flex items-center justify-between gap-2">
           <p class="text-sm text-gray-600">판매 중인 매물 {{ sortedListings.length }}개</p>
-          <select v-model="sortBy" class="rounded-lg border bg-white px-2 py-1.5 text-xs">
+          <select v-model="sortBy" class="rounded-lg border border-[#8b5e3c] bg-[#704326] px-2 py-1.5 text-xs text-[#fff8e7] outline-none">
             <option value="price">낮은 가격순</option>
             <option value="quality">음질 좋은순</option>
             <option value="recent">최신순</option>

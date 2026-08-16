@@ -504,7 +504,7 @@ const applyCapture = async () => {
   }
   clearTimers();
   stopCamera();
-  await router.push('/sell');
+  await router.push('/app/sell');
 };
 
 const pickFallback = async (event: Event) => {

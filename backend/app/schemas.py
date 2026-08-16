@@ -164,6 +164,7 @@ class BuyOrderCreate(BaseModel):
 
 class InstantSellRequest(BaseModel):
     seller_id: str | None = None
+    buy_order_id: str | None = None
 
 
 class WishlistCreate(BaseModel):

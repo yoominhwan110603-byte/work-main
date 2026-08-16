@@ -36,7 +36,7 @@ import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { AlertCircle, Bell, CheckCheck, Heart, LoaderCircle, MessageCircle, Package, Trash2 } from 'lucide-vue-next';
 import type { Notification } from '@/shared/models/market';
-import { deleteNotification, fetchNotifications, markAllNotificationsRead } from '@/shared/services/notifications';
+import { deleteNotification, fetchNotifications, markAllNotificationsRead, markNotificationRead } from '@/shared/services/notifications';
 import { useAppStore } from '@/shared/stores/appStore';
 
 const router = useRouter();
@@ -89,7 +89,25 @@ const remove = async (notification: Notification, navigate = false) => {
     removingId.value = '';
   }
 };
-const open = (notification: Notification) => remove(notification, true);
+const open = async (notification: Notification) => {
+  if (removingId.value) return;
+  const wasUnread = !notification.isRead;
+  errorMessage.value = '';
+  if (wasUnread) {
+    notification.isRead = true;
+    syncUnreadCount();
+  }
+  try {
+    if (wasUnread) await markNotificationRead(notification.id);
+    if (notification.link) await router.push(notification.link);
+  } catch (error) {
+    if (wasUnread) {
+      notification.isRead = false;
+      syncUnreadCount();
+    }
+    errorMessage.value = error instanceof Error ? error.message : '알림 읽음 처리에 실패했습니다.';
+  }
+};
 const readAll = async () => {
   const previous = unreadCount.value;
   notifications.value.forEach(notification => { notification.isRead = true; });

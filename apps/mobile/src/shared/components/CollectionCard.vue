@@ -3,7 +3,7 @@
     type="button"
     class="group w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-left shadow-sm transition active:bg-gray-50 dark:border-neutral-800 dark:bg-neutral-900 dark:active:bg-neutral-800"
     :aria-label="`${collection.title}, ${collection.artist || '아티스트 미상'} 컬렉션 상세 보기`"
-    @click="router.push(`/collection/${collection.id}`)"
+    @click="router.push(`/app/collection/${collection.id}`)"
   >
     <span class="relative block aspect-square bg-gray-100 dark:bg-neutral-800">
       <VinylCover :src="coverImage" :alt="collection.title" class="h-full w-full object-cover" />
@@ -54,8 +54,6 @@ const ownershipLabel = computed(() => ({
   sold: '판매됨',
 }[props.collection.ownershipStatus || 'owned']));
 const badges = computed(() => [
-  props.collection.isRare ? { label: '희귀', className: 'bg-amber-600' } : null,
-  props.collection.isFirstPress ? { label: '초반', className: 'bg-indigo-600' } : null,
   props.collection.visibility === 'private' ? { label: '비공개', className: 'bg-gray-700' } : null,
 ].filter(Boolean) as Array<{ label: string; className: string }>);
 </script>

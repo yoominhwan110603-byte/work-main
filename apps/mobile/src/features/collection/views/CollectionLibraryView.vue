@@ -1,6 +1,6 @@
 <template>
-  <div class="collection-page size-full overflow-y-auto bg-[#f5f0e8] text-gray-950 dark:bg-[#17100c] dark:text-neutral-50">
-    <header class="sticky top-0 z-10 border-b border-gray-200 bg-white/95 px-4 py-4 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/95">
+  <div class="collection-page size-full overflow-y-auto bg-[#f5f0e8] text-gray-950 dark:bg-[#2a1a12] dark:text-neutral-50">
+    <header class="sticky top-0 z-10 border-b border-gray-200 bg-white/95 px-4 py-5 backdrop-blur dark:border-[#684831] dark:bg-[#342217]/95">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <h1 class="text-2xl font-semibold">레코드장</h1>
@@ -9,35 +9,20 @@
         <button
           type="button"
           class="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-[#704326] px-3 text-sm font-medium text-white active:bg-[#56331d]"
-          @click="router.push('/collection/new')"
+          @click="router.push('/app/collection/new')"
         >
           <Plus :size="18" />
           <span>LP 등록</span>
         </button>
       </div>
 
-      <div class="mt-4 grid grid-cols-3 gap-2">
-        <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-          <p class="text-xs text-gray-500 dark:text-neutral-400">꽂힌 LP</p>
-          <p class="mt-1 text-lg font-semibold">{{ visibleCollections.length }}</p>
-        </div>
-        <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-          <p class="text-xs text-gray-500 dark:text-neutral-400">내 칸</p>
-          <p class="mt-1 text-lg font-semibold">{{ mineCollections.length }}</p>
-        </div>
-        <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-neutral-800 dark:bg-neutral-950">
-          <p class="text-xs text-gray-500 dark:text-neutral-400">꺼내볼 희귀반</p>
-          <p class="mt-1 text-lg font-semibold">{{ rareCount }}</p>
-        </div>
-      </div>
-
-      <div class="mt-4 flex items-center gap-2">
+      <div class="mt-5 flex items-center gap-2">
         <div class="relative min-w-0 flex-1">
           <Search :size="18" class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" aria-hidden="true" />
           <input
             v-model="query"
             type="search"
-            class="h-11 w-full rounded-lg border border-[#d5c2aa] bg-white pl-10 pr-10 text-sm outline-none focus:border-[#8a5735] focus:ring-2 focus:ring-[#ead8c2] dark:border-neutral-800 dark:bg-neutral-950 dark:focus:ring-[#3a2417]"
+            class="h-11 w-full rounded-lg border border-[#d5c2aa] bg-white pl-10 pr-10 text-sm outline-none focus:border-[#8a5735] focus:ring-2 focus:ring-[#ead8c2] dark:border-[#684831] dark:bg-[#3a271b] dark:focus:ring-[#5a3d2a]"
             placeholder="앨범, 아티스트, 카탈로그 번호"
             aria-label="컬렉션 검색"
           />
@@ -51,7 +36,7 @@
             <X :size="16" />
           </button>
         </div>
-        <label class="flex h-11 shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 text-xs text-gray-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200">
+        <label class="flex h-11 shrink-0 items-center gap-1 rounded-lg border border-gray-200 bg-white px-2 text-xs text-gray-700 dark:border-[#684831] dark:bg-[#3a271b] dark:text-neutral-200">
           <SlidersHorizontal :size="15" aria-hidden="true" />
           <span class="sr-only">컬렉션 정렬</span>
           <select v-model="sort" class="max-w-[5.8rem] bg-transparent outline-none" aria-label="컬렉션 정렬">
@@ -62,116 +47,140 @@
           </select>
         </label>
       </div>
-
-      <div class="mt-3 flex gap-2 overflow-x-auto pb-1 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="group" aria-label="컬렉션 범위">
-        <button
-          v-for="item in scopeOptions"
-          :key="item.value"
-          type="button"
-          :class="chipClass(scope === item.value)"
-          :aria-pressed="scope === item.value"
-          @click="scope = item.value"
-        >
-          {{ item.label }} <span>{{ item.count }}</span>
-        </button>
-      </div>
-
     </header>
 
-    <main class="px-4 py-4 pb-24">
-      <section v-if="visibleCollections.length === 0" class="rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center dark:border-neutral-700 dark:bg-neutral-900">
+    <main class="px-4 py-5 pb-28">
+      <section v-if="visibleCollections.length === 0" class="rounded-lg border border-dashed border-gray-300 bg-white p-8 text-center dark:border-[#684831] dark:bg-[#342217]">
         <LibraryBig :size="34" class="mx-auto text-gray-300 dark:text-neutral-600" />
         <h2 class="mt-3 text-base font-semibold">등록된 LP가 없습니다</h2>
         <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">첫 번째 소장 LP를 등록해 보세요.</p>
-        <button type="button" class="mt-5 rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white" @click="router.push('/collection/new')">
+        <button type="button" class="mt-5 rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white" @click="router.push('/app/collection/new')">
           LP 등록
         </button>
       </section>
 
-      <section v-else-if="filteredCollections.length === 0" class="rounded-lg border border-gray-200 bg-white p-8 text-center dark:border-neutral-800 dark:bg-neutral-900">
+      <section v-else-if="filteredCollections.length === 0" class="rounded-lg border border-gray-200 bg-white p-8 text-center dark:border-[#684831] dark:bg-[#342217]">
         <SearchX :size="34" class="mx-auto text-gray-300 dark:text-neutral-600" />
         <h2 class="mt-3 text-base font-semibold">조건에 맞는 LP가 없습니다</h2>
-        <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">검색어를 줄이거나 컬렉션 범위를 바꿔보세요.</p>
+        <p class="mt-1 text-sm text-gray-500 dark:text-neutral-400">검색어를 줄여보세요.</p>
         <button type="button" class="mt-5 rounded-lg border border-gray-300 px-4 py-3 text-sm font-medium text-gray-700 dark:border-neutral-700 dark:text-neutral-200" @click="resetBrowse">
-          전체 보기
+          검색 초기화
         </button>
       </section>
 
-      <section v-else>
+      <section v-else class="space-y-4">
+        <div class="flex items-end justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-lg font-semibold text-[#4a2b1b] dark:text-[#f0d2ae]">내 컬렉션</h2>
+            <p class="mt-1 text-sm text-[#8a6240] dark:text-[#cba781]">{{ sortLabel }}</p>
+            <p class="mt-2 text-sm font-semibold text-[#6f492d] dark:text-[#e5c39b]">총 구매 금액 {{ totalCollectionPrice.toLocaleString() }}원</p>
+          </div>
+          <span class="shrink-0 text-sm text-gray-500 dark:text-neutral-400">{{ filteredCollections.length }}개</span>
+        </div>
+
         <div class="shelf-stack" role="list" aria-label="레코드장 컬렉션">
           <div
             v-for="row in shelfDisplayRows"
             :key="row.index"
-            :class="['shelf-row', { 'has-pulled': row.pulled }]"
+            class="shelf-display-row"
             role="listitem"
-            @pointerdown="beginRackPullGesture($event, row)"
-            @pointermove="moveRackPullGesture($event)"
-            @pointerup="finishRackPullGesture($event)"
-            @pointercancel="cancelPullGesture"
-            @mousedown="beginRackMousePullGesture($event, row)"
-            @mousemove="moveRackMousePullGesture($event)"
-            @mouseup="finishRackMousePullGesture($event)"
-            @touchstart.passive="beginRackTouchPullGesture($event, row)"
-            @touchmove.passive="moveRackTouchPullGesture($event)"
-            @touchend="finishRackTouchPullGesture($event)"
           >
             <div
-              class="spine-rack"
-              role="list"
+              :class="['shelf-row', { 'has-pulled': row.pulled }]"
+              @pointerdown="beginRackPullGesture($event, row)"
+              @pointermove="moveRackPullGesture($event)"
+              @pointerup="finishRackPullGesture($event)"
+              @pointercancel="cancelPullGesture"
+              @mousedown="beginRackMousePullGesture($event, row)"
+              @mousemove="moveRackMousePullGesture($event)"
+              @mouseup="finishRackMousePullGesture($event)"
+              @touchstart.passive="beginRackTouchPullGesture($event, row)"
+              @touchmove.passive="moveRackTouchPullGesture($event)"
+              @touchend="finishRackTouchPullGesture($event)"
             >
-              <button
-                v-for="(collection, itemIndex) in row.items"
-                :key="collection.id"
-                type="button"
-                :data-item-index="itemIndex"
-                :class="['spine-record', { 'is-pulled': row.pulled?.id === collection.id }]"
-                :style="spineStyle(collection, row.index, itemIndex)"
-                :aria-label="`${collection.title}, ${collection.artist || '아티스트 미상'} 왼쪽으로 스와이프해서 꺼내기`"
-                role="listitem"
-                @keydown.left.prevent="pullCollection(collection, row.index)"
+              <div
+                class="spine-rack"
+                role="list"
               >
-                <span class="slot-depth" aria-hidden="true"></span>
-                <span class="record-disc-edge" aria-hidden="true"></span>
-                <span class="jacket-edge" aria-hidden="true"></span>
-                <span class="spine-badges" aria-hidden="true">
-                  <span v-if="collection.isRare">희</span>
-                  <span v-if="collection.isFirstPress">초</span>
-                </span>
-              </button>
-
-              <Transition name="pull-left" mode="out-in">
                 <button
-                  v-if="row.pulled"
-                  :key="row.pulled.id"
+                  v-for="(collection, itemIndex) in row.items"
+                  :key="collection.id"
                   type="button"
-                  class="pulled-jacket"
-                  :style="pulledJacketStyle()"
-                  :aria-label="`${row.pulled.title} 상세 보기`"
-                  @pointerdown.stop="beginPulledJacketGesture($event, row)"
-                  @pointermove.stop="movePulledJacketGesture($event)"
-                  @pointerup.stop="finishPulledJacketGesture($event)"
-                  @pointercancel.stop="cancelPulledJacketGesture"
-                  @mousedown.stop="beginPulledJacketMouseGesture($event, row)"
-                  @mousemove.stop="movePulledJacketMouseGesture($event)"
-                  @mouseup.stop="finishPulledJacketMouseGesture($event)"
-                  @touchstart.passive.stop="beginPulledJacketTouchGesture($event, row)"
-                  @touchmove.passive.stop="movePulledJacketTouchGesture($event)"
-                  @touchend.stop="finishPulledJacketTouchGesture($event)"
-                  @click="openPulledCollection($event, row.pulled.id)"
+                  :data-item-index="itemIndex"
+                  :class="['spine-record', { 'is-pulled': row.pulled?.id === collection.id }]"
+                  :style="spineStyle(collection, row.index, itemIndex)"
+                  :aria-label="`${collection.title}, ${collection.artist || '아티스트 미상'} 왼쪽으로 스와이프해서 꺼내기`"
+                  role="listitem"
+                  @keydown.left.prevent="pullCollection(collection, row.index)"
                 >
-                  <span class="pulled-disc" aria-hidden="true"></span>
-                  <VinylCover :src="coverImageFor(row.pulled)" :alt="row.pulled.title" class="pulled-cover" />
-                  <span class="pulled-caption">
-                    <strong>{{ row.pulled.title }}</strong>
-                    <span>{{ row.pulled.artist || '아티스트 미상' }}</span>
-                    <small>
-                      <Disc3 :size="13" />
-                      <span>상세</span>
-                      <ChevronRight :size="13" />
-                    </small>
-                  </span>
+                  <span class="slot-depth" aria-hidden="true"></span>
+                  <span class="jacket-edge" aria-hidden="true"></span>
                 </button>
-              </Transition>
+
+                <Transition name="pull-left" mode="out-in">
+                  <button
+                    v-if="row.pulled"
+                    :key="row.pulled.id"
+                    type="button"
+                    class="pulled-jacket"
+                    :style="pulledJacketStyle(row.pulledIndex)"
+                    :aria-label="`${row.pulled.title} 상세 보기`"
+                    @pointerdown.stop="beginPulledJacketGesture($event, row)"
+                    @pointermove.stop="movePulledJacketGesture($event)"
+                    @pointerup.stop="finishPulledJacketGesture($event)"
+                    @pointercancel.stop="cancelPulledJacketGesture"
+                    @mousedown.stop="beginPulledJacketMouseGesture($event, row)"
+                    @mousemove.stop="movePulledJacketMouseGesture($event)"
+                    @mouseup.stop="finishPulledJacketMouseGesture($event)"
+                    @touchstart.passive.stop="beginPulledJacketTouchGesture($event, row)"
+                    @touchmove.passive.stop="movePulledJacketTouchGesture($event)"
+                    @touchend.stop="finishPulledJacketTouchGesture($event)"
+                    @click="openPulledCollection($event, row.pulled.id)"
+                  >
+                    <span class="pulled-disc" aria-hidden="true"></span>
+                    <VinylCover :src="coverImageFor(row.pulled)" :alt="row.pulled.title" class="pulled-cover" />
+                    <span class="pulled-caption">
+                      <strong>{{ row.pulled.title }}</strong>
+                      <span>{{ row.pulled.artist || '아티스트 미상' }}</span>
+                      <small>
+                        <Disc3 :size="13" />
+                        <span>상세</span>
+                        <ChevronRight :size="13" />
+                      </small>
+                    </span>
+                  </button>
+                </Transition>
+              </div>
+            </div>
+
+            <div class="lp-position-strip" aria-label="선반 LP 위치">
+              <button
+                type="button"
+                :disabled="!row.previous"
+                class="lp-position-item"
+                @click="row.previous && pullCollection(row.previous, row.index)"
+              >
+                <span>전 LP</span>
+                <strong>{{ row.previous?.title || '없음' }}</strong>
+              </button>
+              <button
+                type="button"
+                :disabled="!row.pulled"
+                class="lp-position-item is-current"
+                @click="row.pulled && router.push(collectionRoute(row.pulled.id))"
+              >
+                <span>현재 LP</span>
+                <strong>{{ row.pulled?.title || '없음' }}</strong>
+              </button>
+              <button
+                type="button"
+                :disabled="!row.next"
+                class="lp-position-item"
+                @click="row.next && pullCollection(row.next, row.index)"
+              >
+                <span>다음 LP</span>
+                <strong>{{ row.next?.title || '없음' }}</strong>
+              </button>
             </div>
           </div>
         </div>
@@ -188,13 +197,14 @@ import type { VinylCollection } from '@/shared/models/collection';
 import VinylCover from '@/shared/components/VinylCover.vue';
 import { useAppStore } from '@/shared/stores/appStore';
 
-type CollectionScope = 'all' | 'mine' | 'public';
 type CollectionSort = 'recent' | 'artist' | 'year' | 'title';
 type ShelfDisplayRow = {
   index: number;
   items: VinylCollection[];
   pulledIndex: number;
   pulled: VinylCollection | null;
+  previous: VinylCollection | null;
+  next: VinylCollection | null;
 };
 type ShelfSwipeStart = {
   rowIndex: number;
@@ -209,16 +219,16 @@ type PulledJacketSwipeStart = {
   x: number;
   y: number;
 };
-
 const shelfSlotStepRem = 1.12;
 const shelfSlotWidthRem = 0.76;
 const shelfSlotHeightRem = 9.65;
-const shelfPullReserveGapRem = 0.2;
+const shelfPullGapRem = 0.65;
+const shelfPullStartInsetRem = 0.16;
+const shelfPullShiftRem = shelfSlotHeightRem + shelfPullGapRem;
 
 const store = useAppStore();
 const router = useRouter();
 const query = ref('');
-const scope = ref<CollectionScope>('all');
 const sort = ref<CollectionSort>('recent');
 
 onMounted(() => {
@@ -227,22 +237,8 @@ onMounted(() => {
 
 const isMine = (collection: VinylCollection) => collection.owner.id === store.user.id;
 const ownedCollections = computed(() => store.collections.filter(collection => (collection.ownershipStatus || 'owned') === 'owned'));
-const visibleCollections = computed(() => ownedCollections.value.filter(collection => isMine(collection) || collection.visibility === 'public'));
-const mineCollections = computed(() => visibleCollections.value.filter(isMine));
-const publicCollections = computed(() => visibleCollections.value.filter(collection => collection.visibility === 'public'));
-const rareCount = computed(() => visibleCollections.value.filter(collection => collection.isRare).length);
-
-const scopeOptions = computed(() => [
-  { value: 'all' as const, label: '전체', count: visibleCollections.value.length },
-  { value: 'mine' as const, label: '내 LP', count: mineCollections.value.length },
-  { value: 'public' as const, label: '공개', count: publicCollections.value.length },
-]);
-
-const baseCollections = computed(() => {
-  if (scope.value === 'mine') return mineCollections.value;
-  if (scope.value === 'public') return publicCollections.value;
-  return visibleCollections.value;
-});
+const visibleCollections = computed(() => ownedCollections.value.filter(isMine));
+const baseCollections = computed(() => visibleCollections.value);
 
 const matchesQuery = (collection: VinylCollection, normalizedQuery: string) => {
   if (!normalizedQuery) return true;
@@ -270,8 +266,15 @@ const filteredCollections = computed(() => {
     });
 });
 
+const sortLabel = computed(() => ({
+  recent: '최근 등록순',
+  artist: '아티스트순',
+  year: '발매 연도순',
+  title: '앨범명순',
+}[sort.value]));
+const totalCollectionPrice = computed(() => visibleCollections.value.reduce((total, collection) => total + (Number(collection.purchasePrice) || 0), 0));
 const coverImageFor = (collection: VinylCollection) => collection.coverImageDataUrl || collection.discogsCoverImageUrl || collection.images[0] || '';
-const collectionRoute = (id: string) => `/collection/${id}`;
+const collectionRoute = (id: string) => `/app/collection/${id}`;
 const pulledByRow = ref<Record<number, string>>({});
 const swipeStart = ref<ShelfSwipeStart | null>(null);
 const pulledJacketSwipeStart = ref<PulledJacketSwipeStart | null>(null);
@@ -287,12 +290,14 @@ const shelfRows = computed<VinylCollection[][]>(() => {
 });
 const shelfDisplayRows = computed<ShelfDisplayRow[]>(() => shelfRows.value.map((items, index) => {
   const pulledIndex = items.findIndex(collection => collection.id === pulledByRow.value[index]);
-  const displayPulledIndex = pulledIndex >= 0 ? pulledIndex : (index === 0 ? 0 : -1);
+  const displayPulledIndex = pulledIndex >= 0 ? pulledIndex : (items.length > 0 ? 0 : -1);
   return {
     index,
     items,
     pulledIndex: displayPulledIndex,
     pulled: displayPulledIndex >= 0 ? items[displayPulledIndex] : null,
+    previous: displayPulledIndex > 0 ? items[displayPulledIndex - 1] : null,
+    next: displayPulledIndex >= 0 && displayPulledIndex < items.length - 1 ? items[displayPulledIndex + 1] : null,
   };
 }));
 const spineAccent = (rowIndex: number, itemIndex: number) => {
@@ -306,11 +311,21 @@ const coverBackgroundFor = (collection: VinylCollection) => {
 const spineStyle = (collection: VinylCollection, rowIndex: number, itemIndex: number) => ({
   '--accent': spineAccent(rowIndex, itemIndex),
   '--cover': coverBackgroundFor(collection),
+  '--slot-shift': shouldShiftSpineForPulled(rowIndex, itemIndex) ? `-${shelfPullShiftRem}rem` : '0rem',
   zIndex: itemIndex + 1,
 });
-const pulledJacketStyle = () => ({
-  '--pull-left': `${shelfPullReserveGapRem}rem`,
+const pulledJacketStyle = (pulledIndex: number) => ({
+  '--pull-left': `${shelfPullStartInsetRem + Math.max(0, pulledIndex) * shelfSlotStepRem}rem`,
 });
+const pulledIndexForRow = (rowIndex: number) => {
+  const items = shelfRows.value[rowIndex] || [];
+  const storedIndex = items.findIndex(collection => collection.id === pulledByRow.value[rowIndex]);
+  return storedIndex >= 0 ? storedIndex : (items.length > 0 ? 0 : -1);
+};
+const shouldShiftSpineForPulled = (rowIndex: number, itemIndex: number) => {
+  const pulledIndex = pulledIndexForRow(rowIndex);
+  return pulledIndex > 0 && itemIndex < pulledIndex;
+};
 const pullCollection = (collection: VinylCollection, rowIndex: number) => {
   pulledByRow.value = { ...pulledByRow.value, [rowIndex]: collection.id };
 };
@@ -503,16 +518,8 @@ const finishPulledJacketTouchGesture = (event: TouchEvent) => {
 const cancelPulledJacketGesture = () => {
   pulledJacketSwipeStart.value = null;
 };
-const chipClass = (active: boolean) => [
-  'inline-flex h-9 shrink-0 items-center gap-1 rounded-full border px-3 text-xs',
-  active
-    ? 'border-[#704326] bg-[#704326] text-white'
-    : 'border-gray-200 bg-white text-gray-700 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-200',
-];
-
 const resetBrowse = () => {
   query.value = '';
-  scope.value = 'all';
   sort.value = 'recent';
 };
 </script>
@@ -524,10 +531,10 @@ const resetBrowse = () => {
     linear-gradient(180deg, #f7f1e8 0%, #eee4d8 54%, #f6f1ea 100%);
 }
 
-.dark .collection-page {
+:global(.dark) .collection-page {
   background:
     radial-gradient(circle at 10% 0%, rgba(166, 111, 63, 0.16), transparent 22rem),
-    linear-gradient(180deg, #17100c 0%, #211712 62%, #14100e 100%);
+    linear-gradient(180deg, #2a1a12 0%, #342217 58%, #2d1d14 100%);
 }
 
 .shelf-stack {
@@ -535,10 +542,88 @@ const resetBrowse = () => {
   gap: 1rem;
 }
 
+.shelf-display-row {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.lp-position-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.lp-position-item {
+  min-width: 0;
+  border: 1px solid rgba(132, 99, 63, 0.24);
+  border-radius: 0.55rem;
+  background: rgba(255, 250, 242, 0.82);
+  padding: 0.55rem 0.6rem;
+  text-align: left;
+  box-shadow: 0 7px 14px rgba(93, 61, 34, 0.06);
+}
+
+.lp-position-item span,
+.lp-position-item strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lp-position-item span {
+  color: #8a6240;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+
+.lp-position-item strong {
+  margin-top: 0.16rem;
+  color: #3f2617;
+  font-size: 0.76rem;
+  font-weight: 760;
+}
+
+.lp-position-item.is-current {
+  border-color: rgba(112, 67, 38, 0.56);
+  background: #704326;
+}
+
+.lp-position-item.is-current span,
+.lp-position-item.is-current strong {
+  color: #fff7ed;
+}
+
+.lp-position-item:disabled {
+  opacity: 0.48;
+}
+
+:global(.dark) .lp-position-item {
+  border-color: #684831;
+  background: rgba(58, 39, 27, 0.92);
+}
+
+:global(.dark) .lp-position-item span {
+  color: #d9c0a7;
+}
+
+:global(.dark) .lp-position-item strong {
+  color: #fff1dc;
+}
+
+:global(.dark) .lp-position-item.is-current {
+  border-color: #d09a66;
+  background: #5a3d2a;
+}
+
 .shelf-row {
   --slot-step: 1.12rem;
   --slot-width: 0.76rem;
   --slot-height: 9.65rem;
+  --pull-gap: 0.65rem;
+  --pull-start: 0.16rem;
+  --pull-reserve: calc(var(--slot-height) + var(--pull-gap) + var(--pull-start));
   position: relative;
   min-height: 12.45rem;
   overflow: hidden;
@@ -595,7 +680,7 @@ const resetBrowse = () => {
 
 .pulled-jacket {
   position: absolute;
-  top: 0.95rem;
+  top: 0.58rem;
   left: var(--pull-left);
   z-index: 80;
   width: var(--slot-height);
@@ -604,9 +689,12 @@ const resetBrowse = () => {
   border: 1px solid rgba(255, 255, 255, 0.82);
   background: rgba(255, 255, 255, 0.78);
   box-shadow: 0 18px 24px rgba(72, 48, 28, 0.28), 12px 0 18px rgba(62, 39, 23, 0.14);
+  overflow: hidden;
   text-align: left;
+  clip-path: inset(0 0 0 0 round 0.36rem);
   transform: translateX(0);
   transform-origin: 100% 50%;
+  will-change: opacity, transform, clip-path;
 }
 
 .pulled-jacket:focus-visible,
@@ -689,14 +777,10 @@ const resetBrowse = () => {
   min-width: 0;
   align-items: flex-end;
   justify-content: flex-start;
-  overflow: visible;
+  overflow: hidden;
   min-height: 10.8rem;
-  padding: 0.58rem 0.25rem 1.15rem;
+  padding: 0.58rem 0.25rem 1.15rem var(--pull-reserve);
   touch-action: pan-y;
-}
-
-.shelf-row.has-pulled .spine-rack {
-  padding-left: calc(var(--slot-height) + 0.65rem);
 }
 
 .spine-rack::before {
@@ -725,7 +809,7 @@ const resetBrowse = () => {
   color: white;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
   touch-action: pan-y;
-  transform: translateY(0);
+  transform: translateX(var(--slot-shift, 0rem)) translateY(0);
   transition: transform 170ms ease, opacity 170ms ease;
 }
 
@@ -744,19 +828,6 @@ const resetBrowse = () => {
   box-shadow: 0 12px 16px rgba(50, 31, 18, 0.22);
 }
 
-.record-disc-edge {
-  position: absolute;
-  top: 0.6rem;
-  right: -0.34rem;
-  z-index: 1;
-  width: 2.15rem;
-  aspect-ratio: 1;
-  border-radius: 9999px;
-  background:
-    radial-gradient(circle, #d4b36d 0 8%, #141414 9% 20%, #2b2b2b 21% 44%, #080808 45% 100%);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 8px 12px rgba(0, 0, 0, 0.25);
-}
-
 .jacket-edge {
   position: absolute;
   inset: 0;
@@ -773,66 +844,43 @@ const resetBrowse = () => {
 }
 
 .spine-record.is-pulled {
-  transform: translateY(-0.12rem);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(var(--slot-shift, 0rem)) translateY(-0.12rem);
 }
 
 .spine-record.is-pulled > * {
-  opacity: 1;
+  opacity: 0;
 }
 
 .spine-record.is-pulled .jacket-edge {
   box-shadow: 0 0 0 2px rgba(227, 173, 101, 0.55), 0 13px 16px rgba(54, 34, 20, 0.22);
 }
 
-.spine-badges {
-  position: absolute;
-  top: 0.34rem;
-  left: 50%;
-  z-index: 4;
-  display: flex;
-  flex-direction: column;
-  gap: 0.12rem;
-  transform: translateX(-50%);
-}
-
-.spine-badges span {
-  display: grid;
-  height: 0.9rem;
-  width: 0.9rem;
-  place-items: center;
-  border-radius: 9999px;
-  background: rgba(245, 158, 11, 0.92);
-  font-size: 0.56rem;
-  font-weight: 800;
-  line-height: 1;
-}
-
-.spine-badges span + span {
-  background: rgba(79, 70, 229, 0.9);
-}
-
 .pull-left-enter-active,
 .pull-left-leave-active {
-  transition: opacity 170ms ease, transform 240ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  transition: opacity 150ms ease, transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1), clip-path 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
 .pull-left-enter-from {
   opacity: 0;
-  transform: translateX(2.8rem) scale(0.97);
+  clip-path: inset(0 0 0 92% round 0.36rem);
+  transform: scaleX(0.08);
 }
 
 .pull-left-leave-to {
   opacity: 0;
-  transform: translateX(-1.2rem) scale(0.97);
+  clip-path: inset(0 0 0 92% round 0.36rem);
+  transform: scaleX(0.08);
 }
 
 @media (hover: hover) {
   .spine-record:hover {
-    transform: translateY(-0.18rem);
+    transform: translateX(var(--slot-shift, 0rem)) translateY(-0.18rem);
   }
 
   .spine-record.is-pulled:hover {
-    transform: translateY(0);
+    transform: translateX(var(--slot-shift, 0rem)) translateY(-0.12rem);
   }
 }
 
@@ -843,17 +891,14 @@ const resetBrowse = () => {
   }
 
   .pulled-jacket {
-    top: 1.05rem;
+    top: 0.58rem;
   }
 
   .spine-rack {
     min-height: 10.7rem;
-    padding-inline: 0.1rem;
+    padding-right: 0.1rem;
+    padding-left: var(--pull-reserve);
   }
 
-  .record-disc-edge {
-    width: 2rem;
-    right: -0.34rem;
-  }
 }
 </style>

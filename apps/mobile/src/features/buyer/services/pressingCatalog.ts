@@ -20,7 +20,7 @@ export interface PressingGroup {
   listings: Album[];
 }
 
-export type QualityBucketKey = 'near-mint' | 'excellent' | 'good' | 'listenable';
+export type QualityBucketKey = 'M' | 'NM' | 'EX' | 'VG+' | 'VG' | 'G' | 'P';
 
 export interface QualityBucket {
   key: QualityBucketKey;
@@ -56,15 +56,22 @@ const normalizeSearchValue = (value: unknown) => normalizeCatalogValue(value)
   .replace(/\s+/g, ' ')
   .trim();
 
-const qualityOrder: QualityBucketKey[] = ['near-mint', 'excellent', 'good', 'listenable'];
+const qualityOrder: QualityBucketKey[] = ['M', 'NM', 'EX', 'VG+', 'VG', 'G', 'P'];
 const qualityMeta: Record<QualityBucketKey, { label: string; description: string; rank: number }> = {
-  'near-mint': { label: '최상급', description: 'NM 또는 90점 이상', rank: 4 },
-  excellent: { label: '상급', description: 'VG+ 또는 85점 이상', rank: 3 },
-  good: { label: '일반', description: 'VG 또는 75점 이상', rank: 2 },
-  listenable: { label: '감상용', description: 'G+/G, 상태 확인 필요', rank: 1 },
+  M: { label: 'M', description: '96점 이상, 미개봉 또는 민트급', rank: 7 },
+  NM: { label: 'NM', description: '88점 이상, 새것에 가까운 상태', rank: 6 },
+  EX: { label: 'EX', description: '80점 이상, 상급 상태', rank: 5 },
+  'VG+': { label: 'VG+', description: '70점 이상, 좋은 감상용 상태', rank: 4 },
+  VG: { label: 'VG', description: '58점 이상, 일반 감상용 상태', rank: 3 },
+  G: { label: 'G', description: '45점 이상, 상태 확인 필요', rank: 2 },
+  P: { label: 'P', description: '45점 미만, 강한 사용감', rank: 1 },
 };
 
-const gradeRank: Record<string, number> = { NM: 5, 'VG+': 4, VG: 3, 'G+': 2, G: 1 };
+const gradeRank: Record<string, number> = { M: 7, NM: 6, EX: 5, 'VG+': 4, VG: 3, G: 2, P: 1 };
+const normalizeGradeBucket = (value: unknown): QualityBucketKey | null => {
+  const grade = String(value || '').trim().toUpperCase();
+  return qualityOrder.includes(grade as QualityBucketKey) ? grade as QualityBucketKey : null;
+};
 
 const countryName = (value: unknown) => {
   const text = compactText(value);
@@ -89,11 +96,12 @@ const countryName = (value: unknown) => {
 };
 
 const compactText = (value: unknown) => String(value || '').trim().replace(/\s+/g, ' ');
+const genericPressingWords = new Set(['lp', 'vinyl', 'album', 'record', 'records', '음반', '앨범', '바이닐']);
 const uniqueParts = (parts: string[]) => {
   const seen = new Set<string>();
   return parts.filter(part => {
     const normalized = normalizeSearchValue(part);
-    if (!normalized || seen.has(normalized)) return false;
+    if (!normalized || seen.has(normalized) || genericPressingWords.has(normalized)) return false;
     seen.add(normalized);
     return true;
   });
@@ -102,7 +110,10 @@ const uniqueParts = (parts: string[]) => {
 const pressingTextForAlbum = (album: Album) => {
   const analysis = album.analysisReport || {};
   const analysisPressing = typeof analysis.pressing === 'string' ? analysis.pressing : '';
-  return compactText(album.pressingCondition || analysisPressing);
+  const text = compactText(album.pressingCondition || analysisPressing);
+  const normalized = text.toLocaleLowerCase('ko-KR');
+  if (['희귀', 'rare', '초반', '초판', 'first press', 'firstpress', 'original'].some(keyword => normalized.includes(keyword))) return '';
+  return text;
 };
 
 const featureTagsForAlbum = (album: Album) => {
@@ -112,8 +123,6 @@ const featureTagsForAlbum = (album: Album) => {
     ...(album.tags || []),
   ].join(' ').toLocaleLowerCase('ko-KR');
   const tags: string[] = [];
-  if (album.isFirstPress || /초반|first\s*press|firstpress|original/.test(source)) tags.push('초반');
-  if (album.isRare || /희귀|rare|limited|한정/.test(source)) tags.push('희귀');
   if (/obi/.test(source)) tags.push('OBI 포함');
   if (/promo|프로모|비매품/.test(source)) tags.push('프로모');
   if (/mono|모노/.test(source)) tags.push('모노');
@@ -140,7 +149,7 @@ const pressingFeatureParts = (representative: Album, listings: Album[]) => {
 const pressingDisplayName = (representative: Album, listings: Album[]) => {
   const coreParts = pressingFeatureParts(representative, listings).slice(0, 4);
   if (coreParts.length) return coreParts.join(' · ');
-  return representative.isFirstPress ? '초반 추정 LP' : '일반 LP 판본';
+  return '판본 정보 확인';
 };
 
 export const pressingKeyForAlbum = (album: Album): string => {
@@ -174,12 +183,16 @@ export const matchesAlbumTitle = (album: Album, query: string) => {
 };
 
 export const qualityBucketForAlbum = (album: Album): QualityBucketKey => {
-  const grade = String(album.audioGrade || '').toUpperCase();
+  const grade = normalizeGradeBucket(album.audioGrade);
   const score = Number(album.audioScore || 0);
-  if (grade === 'NM' || score >= 90) return 'near-mint';
-  if (grade === 'VG+' || score >= 85) return 'excellent';
-  if (grade === 'VG' || score >= 75) return 'good';
-  return 'listenable';
+  if (grade) return grade;
+  if (score >= 96) return 'M';
+  if (score >= 88) return 'NM';
+  if (score >= 80) return 'EX';
+  if (score >= 70) return 'VG+';
+  if (score >= 58) return 'VG';
+  if (score >= 45) return 'G';
+  return 'P';
 };
 
 const compareListingsByQuality = (left: Album, right: Album) => {

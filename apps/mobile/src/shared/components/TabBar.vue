@@ -32,8 +32,8 @@ interface TabItem {
 const route = useRoute();
 const tabs: TabItem[] = [
   { icon: Home, label: '홈', path: '/app', match: path => path === '/app' || path.startsWith('/app/search') || path.startsWith('/app/pressing') },
-  { icon: PlusCircle, label: '판매', path: '/sell', match: path => path.startsWith('/sell') },
-  { icon: LibraryBig, label: '컬렉션', path: '/app/collection', match: path => path.startsWith('/app/collection') || path.startsWith('/collection') },
+  { icon: PlusCircle, label: '판매', path: '/app/sell', match: path => path.startsWith('/app/sell') },
+  { icon: LibraryBig, label: '컬렉션', path: '/app/collection', match: path => path.startsWith('/app/collection') },
   { icon: User, label: '프로필', path: '/app/profile', match: path => path.startsWith('/app/profile') || path.startsWith('/app/settings') },
 ];
 

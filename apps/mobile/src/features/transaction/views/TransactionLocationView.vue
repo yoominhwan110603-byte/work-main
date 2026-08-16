@@ -52,7 +52,7 @@ import {
   type KakaoMarkerInstance,
 } from '@/shared/services/kakaoMap';
 import { useAppStore } from '@/shared/stores/appStore';
-import { fetchApi } from '@/shared/services/api';
+import { findLocationPointByRest, parseCoordinatePoint, renderStaticMapHtml } from '@/shared/services/staticMap';
 
 const DEFAULT_POINT: KakaoMapPoint = {
   lat: 37.497952,
@@ -100,55 +100,12 @@ const escapeMapText = (value: string) => value
   .replace(/'/g, '&#39;');
 
 const renderFallbackMap = (point: KakaoMapPoint) => {
-  const zoom = 15;
-  const center = lonLatToTile(point.lat, point.lng, zoom);
-  const tiles: string[] = [];
-  for (let yOffset = -1; yOffset <= 1; yOffset += 1) {
-    for (let xOffset = -1; xOffset <= 1; xOffset += 1) {
-      const x = center.x + xOffset;
-      const y = center.y + yOffset;
-      const left = (xOffset + 1) * 33.3333;
-      const top = (yOffset + 1) * 33.3333;
-      tiles.push(`<img src="https://tile.openstreetmap.org/${zoom}/${x}/${y}.png" style="position:absolute;left:${left}%;top:${top}%;width:33.3334%;height:33.3334%;object-fit:cover;" alt="">`);
-    }
-  }
-  const title = escapeMapText(point.title);
-  const address = escapeMapText(point.addressName);
-  fallbackMapHtml.value = `
-    <div style="position:absolute;inset:0;overflow:hidden;background:#e5e7eb;">
-      ${tiles.join('')}
-      <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-100%);width:30px;height:30px;border-radius:999px;background:#2563eb;border:5px solid white;box-shadow:0 8px 22px rgba(0,0,0,.25);"></div>
-      <div style="position:absolute;left:16px;right:16px;bottom:16px;border-radius:8px;background:rgba(255,255,255,.94);padding:10px 12px;font-size:13px;color:#1f2937;box-shadow:0 3px 12px rgba(0,0,0,.14);">
-        ${title}<br><span style="color:#6b7280;">${address}</span>
-      </div>
-    </div>
-  `;
-};
-
-const findLocationPointByRest = async (keyword: string): Promise<KakaoMapPoint | null> => {
-  const query = new URLSearchParams({ keyword, count: '1' });
-  const response = await fetchApi(`/address/search?${query.toString()}`, {}, 9000);
-  if (!response.ok) return null;
-  const payload = await response.json() as {
-    candidates?: Array<{
-      latitude?: string;
-      longitude?: string;
-      placeName?: string;
-      roadAddress?: string;
-      jibunAddress?: string;
-      address?: string;
-    }>;
-  };
-  const candidate = payload.candidates?.[0];
-  const lat = Number(candidate?.latitude);
-  const lng = Number(candidate?.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-  return {
-    lat,
-    lng,
-    title: candidate?.placeName || keyword,
-    addressName: candidate?.roadAddress || candidate?.jibunAddress || candidate?.address || keyword,
-  };
+  fallbackMapHtml.value = renderStaticMapHtml(point, {
+    zoom: 15,
+    tileRadius: 2,
+    markerSize: 30,
+    showInfo: true,
+  });
 };
 
 const relayoutMap = () => {
@@ -158,6 +115,25 @@ const relayoutMap = () => {
 const renderMap = async () => {
   await nextTick();
   if (!mapContainer.value || disposed) return;
+
+  const coordinatePoint = parseCoordinatePoint(mapQuery.value);
+  if (coordinatePoint) {
+    marker?.setMap(null);
+    selectedPoint.value = coordinatePoint;
+    renderFallbackMap(coordinatePoint);
+    mapMessage.value = '';
+    return;
+  }
+
+  const restPoint = await findLocationPointByRest(mapQuery.value).catch(() => null);
+  if (disposed) return;
+  if (restPoint) {
+    marker?.setMap(null);
+    selectedPoint.value = restPoint;
+    renderFallbackMap(restPoint);
+    mapMessage.value = '';
+    return;
+  }
 
   if (!getKakaoMapJavaScriptKey()) {
     mapMessage.value = 'VITE_KAKAO_MAP_JAVASCRIPT_KEY가 없어 지도를 표시할 수 없습니다.';

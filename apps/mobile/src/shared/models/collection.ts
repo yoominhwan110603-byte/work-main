@@ -67,7 +67,7 @@ const mockCollectionFromAlbum = (albumIndex: number, overrides: Partial<VinylCol
     ownershipStatus: 'owned',
     purchasePrice: undefined,
     notes: `${album.artist}의 ${album.title} 소장본입니다. 판매 전 상태 공유용으로 자켓, 판면, 샘플 녹음을 함께 남겼습니다.`,
-    tags: ['소장반', album.genre, ...(album.isRare ? ['희귀반'] : []), ...(album.isFirstPress ? ['초반'] : [])].filter(Boolean),
+    tags: ['소장반', album.genre].filter(Boolean),
     images: album.images,
     coverImageDataUrl: album.coverImageDataUrl,
     recordImageDataUrl: album.recordImageDataUrl,
@@ -76,8 +76,8 @@ const mockCollectionFromAlbum = (albumIndex: number, overrides: Partial<VinylCol
     audioScore: album.audioScore,
     jacketGrade: album.jacketGrade,
     jacketScore: album.jacketScore,
-    isRare: album.isRare,
-    isFirstPress: album.isFirstPress,
+    isRare: false,
+    isFirstPress: false,
     audioSamples: {
       good: {
         name: `${album.title} 안정 구간`,

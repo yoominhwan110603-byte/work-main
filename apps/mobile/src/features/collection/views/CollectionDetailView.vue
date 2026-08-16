@@ -1,7 +1,7 @@
 <template>
   <main v-if="collection" class="size-full bg-white text-gray-900 flex flex-col">
     <header class="sticky top-0 z-10 shrink-0 border-b bg-white px-4 py-4 flex items-center justify-between">
-      <button class="rounded-full p-2 active:bg-gray-100" @click="goBackOr(router, '/app')">
+      <button class="rounded-full p-2 active:bg-gray-100" @click="goBackOr(router, '/app/collection')">
         <ArrowLeft :size="24" />
       </button>
       <span class="rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-600">{{ collection.visibility === 'public' ? '공개 컬렉션' : '비공개' }}</span>
@@ -41,9 +41,7 @@
             <span v-if="collection.releaseCountry" class="rounded-full bg-blue-50 px-3 py-1 text-blue-700">{{ collection.releaseCountry }} 프레싱</span>
           </div>
           <div class="flex flex-wrap gap-2">
-            <span v-if="collection.isRare" class="rounded-full bg-amber-100 px-3 py-1 text-sm text-amber-800">희귀반</span>
-            <span v-if="collection.isFirstPress" class="rounded-full bg-purple-100 px-3 py-1 text-sm text-purple-700">초반 추정</span>
-            <span v-for="tag in collection.tags" :key="tag" class="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700">{{ displayTag(tag) }}</span>
+            <span v-for="tag in visibleTags" :key="tag" class="rounded-full bg-gray-100 px-3 py-1 text-sm text-gray-700">{{ displayTag(tag) }}</span>
           </div>
         </section>
 
@@ -128,14 +126,14 @@
 
     <footer class="shrink-0 border-t bg-white p-4">
       <div v-if="isMine" class="grid grid-cols-2 gap-2">
-        <button class="rounded-lg border border-gray-300 py-3 text-gray-800" @click="router.push(`/collection/${collection.id}/edit`)">정보 수정</button>
+        <button class="rounded-lg border border-gray-300 py-3 text-gray-800" @click="router.push(`/app/collection/${collection.id}/edit`)">정보 수정</button>
         <button class="rounded-lg bg-blue-600 py-3 text-white" @click="convertToListing">판매글로 전환</button>
       </div>
       <div v-else class="flex gap-3">
         <button class="flex-1 rounded-lg border border-blue-600 py-3 text-blue-600" @click="openCollectionChat">
           <MessageCircle :size="19" class="inline" /> 문의
         </button>
-        <button class="flex-1 rounded-lg bg-blue-600 py-3 text-white" @click="router.push(`/collection/${collection.id}/offer`)">
+        <button class="flex-1 rounded-lg bg-blue-600 py-3 text-white" @click="router.push(`/app/collection/${collection.id}/offer`)">
           구매 제안
         </button>
       </div>
@@ -144,7 +142,7 @@
 
   <main v-else class="size-full bg-white p-6 text-center">
     <p class="text-gray-600">컬렉션을 찾을 수 없습니다.</p>
-    <button class="mt-4 rounded-lg bg-blue-600 px-4 py-3 text-white" @click="router.push('/app')">홈으로</button>
+    <button class="mt-4 rounded-lg bg-blue-600 px-4 py-3 text-white" @click="router.push('/app/collection')">컬렉션으로</button>
   </main>
 </template>
 
@@ -181,6 +179,8 @@ const sampleItems = computed(() => {
   ].filter(Boolean) as Array<CollectionAudioSample & { kind: string; label: string }>;
 });
 const sampleSummary = computed(() => sampleItems.value.length ? `${sampleItems.value.length}개 샘플 저장됨` : '샘플 없음');
+const visibleTags = computed(() => (collection.value?.tags || [])
+  .filter(tag => !['희귀', 'rare', '초반', '초판', 'first press', 'firstpress', 'original', 'lp', 'vinyl', 'album'].some(keyword => tag.toLowerCase().includes(keyword))));
 
 const displayTag = (tag: string) => tag.startsWith('#') ? tag : `#${tag}`;
 const formatDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
@@ -206,6 +206,6 @@ const convertToListing = () => {
     alert(result.message);
     return;
   }
-  router.push({ path: '/sell', query: { collectionId: collection.value.id } });
+  router.push({ path: '/app/sell', query: { collectionId: collection.value.id } });
 };
 </script>

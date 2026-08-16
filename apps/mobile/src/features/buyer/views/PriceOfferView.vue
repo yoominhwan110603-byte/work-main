@@ -80,6 +80,7 @@ const store = useAppStore();
 const album = computed(() => fallbackAlbum(store, route.params.albumId));
 const offerPrice = ref('');
 const isSubmitting = ref(false);
+const isOwnListing = computed(() => album.value.seller.id === store.user.id);
 
 onMounted(() => {
   void store.loadListingsFromServer();
@@ -108,9 +109,13 @@ const offerState = computed(() => {
   return { title: '수락 가능성이 높습니다', description: '판매가 이상으로 제안합니다.', className: 'bg-green-50 border-green-200 text-green-900' };
 });
 
-const canSubmit = computed(() => offerNumber.value > 0 && !isSubmitting.value);
+const canSubmit = computed(() => offerNumber.value > 0 && !isSubmitting.value && !isOwnListing.value);
 
 const submit = async () => {
+  if (isOwnListing.value) {
+    alert('내 판매글에는 가격 제안을 보낼 수 없습니다.');
+    return;
+  }
   if (!canSubmit.value) return;
   isSubmitting.value = true;
   try {

@@ -54,14 +54,21 @@
           </template>
         </div>
 
-        <div v-if="album.isRare" class="flex gap-2">
-          <span v-if="album.isFirstPress" class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-sm">초반 추정</span>
-          <span class="px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-sm">희귀반</span>
-        </div>
-
-        <section class="border-t pt-4">
-          <h2 class="text-lg mb-2">상세 설명</h2>
-          <p class="text-gray-700 whitespace-pre-line">{{ album.description }}</p>
+        <section class="border-t pt-3">
+          <div class="rounded-lg bg-gray-50 p-3">
+            <div class="mb-1.5 flex items-center justify-between gap-3">
+              <h2 class="text-sm font-medium text-gray-900">상세 설명</h2>
+              <button
+                v-if="showDescriptionToggle"
+                type="button"
+                class="shrink-0 text-xs font-medium text-blue-600"
+                @click="descriptionExpanded = !descriptionExpanded"
+              >
+                {{ descriptionExpanded ? '접기' : '더보기' }}
+              </button>
+            </div>
+            <p class="whitespace-pre-line text-sm leading-5 text-gray-600">{{ visibleDescription }}</p>
+          </div>
         </section>
 
         <section class="border-t pt-4">
@@ -71,67 +78,41 @@
             <div class="flex items-center gap-1 text-blue-600"><BadgeCheck :size="18" /><span class="text-sm">인증됨</span></div>
           </div>
           <div class="grid grid-cols-2 gap-4">
-            <div><p class="text-sm text-gray-600 mb-1">음질 등급</p><p class="text-2xl">{{ album.audioGrade }}</p></div>
-            <div><p class="text-sm text-gray-600 mb-1">음질 점수</p><p class="text-2xl text-blue-600">{{ album.audioScore }}점</p></div>
-            <div><p class="text-sm text-gray-600 mb-1">판본</p><p class="text-lg">{{ album.isFirstPress ? '초반 추정' : '확인 필요' }}</p></div>
-            <div><p class="text-sm text-gray-600 mb-1">자켓 상태</p><p class="text-lg">{{ jacketGrade }}</p></div>
-            <div><p class="text-sm text-gray-600 mb-1">판면 점수</p><p class="text-lg">{{ surfaceScore ? `${surfaceScore}점` : '확인 필요' }}</p></div>
-            <div><p class="text-sm text-gray-600 mb-1">스크래치 후보</p><p class="text-lg">{{ scratchCountText }}</p></div>
+            <div><p class="text-sm text-gray-600 mb-1">음질 등급</p><p class="text-2xl">{{ audioGradeText }}</p></div>
+            <div><p class="text-sm text-gray-600 mb-1">음질 점수</p><p class="text-2xl text-blue-600">{{ audioScoreText }}</p></div>
+            <div><p class="text-sm text-gray-600 mb-1">스크래치 등급</p><p class="text-lg">{{ surfaceGradeText }}</p></div>
+            <div><p class="text-sm text-gray-600 mb-1">스크래치 점수</p><p class="text-lg">{{ surfaceScoreText }}</p></div>
           </div>
           </div>
         </section>
 
-        <section v-if="marketEstimate" class="border-t pt-4">
-          <div class="rounded-lg border border-blue-100 bg-blue-50 p-4 space-y-3">
+        <section v-if="isOwnListing" class="border-t pt-4">
+          <div class="rounded-lg border border-blue-100 bg-blue-50 p-3">
             <div class="flex items-center justify-between gap-3">
-              <h2 class="text-base font-medium text-blue-950">시세 정보</h2>
-              <span v-if="marketLoading" class="text-xs text-blue-600">갱신 중</span>
-            </div>
-            <div class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-              <div class="rounded bg-white p-2"><p class="text-gray-500">기준가</p><p>{{ formatWon(marketEstimate.basePrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">하한가</p><p>{{ formatWon(marketEstimate.minPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">위시 대기</p><p>{{ wishlistCount }}명</p></div>
-              <div v-if="isOwnListing" class="rounded bg-white p-2"><p class="text-gray-500">구매 대기</p><p>{{ buyOrderCount }}명</p></div>
-              <div v-if="isOwnListing && instantSalePrice" class="rounded bg-white p-2"><p class="text-gray-500">승인 가능가</p><p>{{ formatWon(instantSalePrice) }}</p></div>
-            </div>
-            <p v-if="isOwnListing" class="rounded-lg bg-white p-2 text-xs text-gray-700">
-              현재 {{ wishlistCount }}명이 이 LP를 위시리스트로 기다리고 있습니다.
-            </p>
-            <button
-              v-if="instantSaleAvailable"
-              type="button"
-              class="w-full rounded-lg bg-blue-600 px-4 py-3 text-sm font-medium text-white disabled:bg-gray-300"
-              :disabled="instantSelling"
-              @click="approveBuyOrder"
-            >
-              {{ instantSelling ? '구매대기 승인 중' : `구매대기 승인하고 채팅으로 이동${instantSalePrice ? ` · ${formatWon(instantSalePrice)}` : ''}` }}
-            </button>
-            <div v-if="isOwnListing && marketAdvice?.advice.length" class="space-y-2">
-              <p v-for="item in marketAdvice.advice" :key="item.message" class="rounded-lg bg-white p-2 text-xs text-gray-700">
-                {{ item.message }}
-              </p>
+              <h2 class="text-sm font-medium text-blue-950">구매대기</h2>
+              <span class="rounded bg-white px-2 py-1 text-xs text-blue-700">
+                {{ matchesLoading ? '확인 중' : `${buyOrderCount}명` }}
+              </span>
             </div>
           </div>
         </section>
 
         <section class="border-t pt-4">
-          <div class="bg-neutral-900 text-white p-4 rounded-lg">
-          <div class="flex items-center justify-between gap-3 mb-3">
+          <div class="rounded-lg bg-neutral-900 p-3 text-white">
+          <div class="mb-2 flex items-center justify-between gap-3">
             <div class="flex items-center gap-3 min-w-0">
-              <div class="w-11 h-11 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0"><Volume2 :size="20" /></div>
+              <div class="w-9 h-9 rounded-full bg-white/10 flex items-center justify-center flex-shrink-0"><Volume2 :size="18" /></div>
               <div class="min-w-0">
-                <h2 class="text-lg">LP 샘플</h2>
-                <p class="text-sm text-white/70 truncate">{{ sampleDescription }}</p>
+                <h2 class="text-base">LP 샘플</h2>
+                <p class="text-xs text-white/60 truncate">{{ sampleDescription }}</p>
               </div>
             </div>
           </div>
-          <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div class="space-y-2">
             <div
               v-for="sample in sampleItems"
               :key="sample.kind"
-              class="rounded-lg bg-white/10 p-3"
+              class="rounded-lg bg-white/10 p-2"
             >
               <button
                 type="button"
@@ -139,9 +120,11 @@
                 :disabled="Boolean(samplePlaying) || !sample.dataUrl"
                 @click="playSample(sample.kind)"
               >
-                <span class="flex items-center gap-2 text-sm font-medium"><Play :size="15" />{{ sample.label }}</span>
-                <span class="block text-xs text-white/60 mt-1 truncate">{{ sample.name }} · {{ sample.durationSeconds }}초</span>
-                <span v-if="sample.recordedAt" class="block text-xs text-white/60 mt-1">녹음일 {{ formatSampleRecordedDate(sample.recordedAt) }}</span>
+                <span class="flex items-center justify-between gap-2">
+                  <span class="flex min-w-0 items-center gap-2 text-sm font-medium"><Play :size="15" />{{ sample.label }}</span>
+                  <span class="shrink-0 text-xs text-white/60">{{ sampleTimeRange(sample) }}</span>
+                </span>
+                <span class="block truncate text-xs text-white/50">{{ sample.name }}</span>
               </button>
               <audio
                 v-if="sample.dataUrl"
@@ -159,7 +142,7 @@
               </audio>
             </div>
           </div>
-          <p v-if="samplePlaying" class="text-xs text-white/60 mt-3">{{ samplePlaying === 'good' ? '좋은 구간 샘플 재생 중' : '안 좋은 구간 샘플 재생 중' }}</p>
+          <p v-if="samplePlaying" class="text-xs text-white/60 mt-3">{{ samplePlayingText }}</p>
           </div>
         </section>
 
@@ -174,9 +157,6 @@
         <section class="border-t pt-4">
           <div class="bg-gray-50 p-4 rounded-lg">
           <p class="text-3xl mb-2">{{ album.price.toLocaleString() }}원</p>
-          <p class="text-sm text-gray-600">시세: {{ album.priceRange.min.toLocaleString() }}원 ~ {{ album.priceRange.max.toLocaleString() }}원</p>
-          <p v-if="album.price < album.priceRange.min" class="text-sm text-green-600 mt-1">시세보다 낮습니다</p>
-          <p v-if="album.price > album.priceRange.max" class="text-sm text-orange-600 mt-1">시세보다 높습니다</p>
           </div>
         </section>
 
@@ -191,24 +171,25 @@
           </div>
         </section>
 
-        <div class="border-t pt-4 flex items-center gap-2 text-gray-600"><MapPin :size="18" /><span>{{ album.location }}</span></div>
+        <section class="border-t pt-4 space-y-3">
+          <div class="flex items-center gap-2 text-gray-600"><MapPin :size="18" /><span>{{ album.location || '거래 위치 미정' }}</span></div>
+          <div v-if="album.location" class="relative h-44 overflow-hidden rounded-lg border bg-gray-100">
+            <div ref="listingMapContainer" class="absolute inset-0"></div>
+            <div v-if="listingFallbackMapHtml" class="absolute inset-0" v-html="listingFallbackMapHtml"></div>
+            <div v-if="listingMapMessage" class="absolute inset-x-3 top-1/2 z-10 -translate-y-1/2 rounded-lg bg-white/95 p-3 text-center text-xs text-gray-600 shadow-sm">
+              {{ listingMapMessage }}
+            </div>
+          </div>
+        </section>
       </div>
     </div>
 
     <div v-if="isOwnListing" class="border-t p-4 grid grid-cols-2 gap-2">
-      <button class="py-3 border border-gray-300 text-gray-800 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push(`/sell/${album.id}/edit`)">
+      <button class="py-3 border border-gray-300 text-gray-800 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push(`/app/sell/${album.id}/edit`)">
         <Pencil :size="18" />수정
       </button>
       <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <ClipboardList :size="18" />제안
-      </button>
-      <button
-        v-if="instantSaleAvailable"
-        class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm disabled:bg-gray-300"
-        :disabled="instantSelling"
-        @click="approveBuyOrder"
-      >
-        <ClipboardList :size="18" />{{ instantSelling ? '구매대기 승인 중' : '구매대기 승인' }}
       </button>
       <button class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
         <MessageCircle :size="18" />채팅
@@ -217,40 +198,52 @@
         {{ isHidingListing ? '내리는 중' : '게시글 내리기' }}
       </button>
     </div>
-    <div v-else class="border-t p-4 flex gap-3">
-      <button class="flex-1 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-2" @click="openSellerChat">
-        <MessageCircle :size="20" />채팅하기
-      </button>
+    <div v-else class="border-t p-4">
+      <button class="w-full py-3 bg-emerald-600 text-white rounded-lg" @click="router.push(`/market/buy-order/${album.id}`)">구매대기</button>
     </div>
   </div>
   <div v-else>앨범을 찾을 수 없습니다</div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, BadgeCheck, ClipboardList, Eye, Heart, MapPin, MessageCircle, Pencil, Play, Volume2 } from 'lucide-vue-next';
-import { getActiveTrade, saveActiveTrade } from '@/features/transaction/services/tradeState';
+import { getActiveTrade } from '@/features/transaction/services/tradeState';
 import { useAppStore } from '@/shared/stores/appStore';
 import { findAlbumById } from '@/features/buyer/services/albumLookup';
-import { makeOneToOneChatId } from '@/features/transaction/services/chatClient';
 import { goBackOr } from '@/shared/services/navigation';
 import { resolveApiUrl } from '@/shared/services/api';
-import { fetchMarketAdvice, instantSellListing, recordListingView } from '@/shared/services/market';
-import type { MarketAdviceResponse } from '@/shared/models/market';
+import { fetchBuyOrderMatches, recordListingView } from '@/shared/services/market';
+import type { BuyOrder } from '@/shared/models/market';
 import VinylCover from '@/shared/components/VinylCover.vue';
+import {
+  findKakaoMapPoint,
+  getKakaoMapJavaScriptKey,
+  loadKakaoMaps,
+  type KakaoMapInstance,
+  type KakaoMarkerInstance,
+} from '@/shared/services/kakaoMap';
+import { findLocationPointByRest, parseCoordinatePoint, renderStaticMapHtml } from '@/shared/services/staticMap';
 
 const route = useRoute();
 const router = useRouter();
 const store = useAppStore();
 const album = computed(() => findAlbumById(store, route.params.id));
 const currentImageIndex = ref(0);
-const samplePlaying = ref<'good' | 'noisy' | null>(null);
+const descriptionExpanded = ref(false);
+const samplePlaying = ref<'sample' | 'good' | 'noisy' | null>(null);
 const isHidingListing = ref(false);
-const instantSelling = ref(false);
-const marketAdvice = ref<MarketAdviceResponse | null>(null);
-const marketLoading = ref(false);
+const buyOrderMatches = ref<BuyOrder[]>([]);
+const matchesLoading = ref(false);
+const matchesLoaded = ref(false);
 const wishlistSaving = ref(false);
+const listingMapContainer = ref<HTMLElement | null>(null);
+const listingFallbackMapHtml = ref('');
+const listingMapMessage = ref('');
+let listingMap: KakaoMapInstance | null = null;
+let listingMarker: KakaoMarkerInstance | null = null;
+let listingMapRequest = 0;
 let sampleAudio: HTMLAudioElement | null = null;
 const AUDIO_SAMPLE_PATH_PREFIX = '/audio-samples/';
 const resolveSampleUrl = (pathOrUrl: string) => pathOrUrl.startsWith(AUDIO_SAMPLE_PATH_PREFIX) ? pathOrUrl : resolveApiUrl(pathOrUrl);
@@ -261,7 +254,7 @@ const resolveSampleFallbackUrl = (pathOrUrl: string) => {
 };
 const sampleMimeType = (pathOrUrl = '') => pathOrUrl.toLowerCase().endsWith('.m4a') ? 'audio/mp4' : 'audio/mpeg';
 type SampleItem = {
-  kind: 'good' | 'noisy';
+  kind: 'sample' | 'good' | 'noisy';
   label: string;
   name: string;
   dataUrl?: string;
@@ -277,65 +270,23 @@ const isOwnListing = computed(() => Boolean(album.value && (route.query.mine ===
 const activeTrade = computed(() => album.value ? getActiveTrade(album.value.id) : undefined);
 const isCompletedTrade = computed(() => activeTrade.value?.status === 'completed');
 const showMarketplaceMetrics = computed(() => !isOwnListing.value && !isCompletedTrade.value);
-const marketEstimate = computed(() => marketAdvice.value?.estimate || album.value?.market || null);
-const formatWon = (value?: number | null) => typeof value === 'number' && value > 0 ? `${value.toLocaleString()}원` : '-';
-const formatSampleRecordedDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
-const wishlistCount = computed(() => album.value?.wishlistCount ?? marketEstimate.value?.metrics?.wishlistCount ?? 0);
-const buyOrderCount = computed(() => marketEstimate.value?.metrics?.buyOrderCount ?? album.value?.buyOrderCount ?? 0);
-const instantSalePrice = computed(() => marketEstimate.value?.instantSalePrice ?? album.value?.instantSalePrice ?? album.value?.market?.instantSalePrice ?? 0);
-const instantSaleAvailable = computed(() => isOwnListing.value && !isCompletedTrade.value && Boolean(marketEstimate.value?.instantSaleAvailable || instantSalePrice.value > 0));
+const buyOrderCount = computed(() => isOwnListing.value && matchesLoaded.value ? buyOrderMatches.value.length : album.value?.buyOrderCount ?? 0);
 const isWishlisted = computed(() => Boolean(album.value && store.isFavoriteAlbum(album.value)));
 const analysisReport = computed(() => album.value?.analysisReport as Record<string, unknown> | undefined);
-const recordSurface = computed(() => analysisReport.value?.recordSurface as { surfaceScore?: number; scratchCount?: number } | undefined);
-const jacketReport = computed(() => analysisReport.value?.jacket as { jacketGrade?: string; jacketScore?: number } | undefined);
-const jacketGrade = computed(() => jacketReport.value?.jacketGrade || album.value?.jacketGrade || (jacketReport.value?.jacketScore ? `${jacketReport.value.jacketScore}점` : '확인 필요'));
+const recordSurface = computed(() => analysisReport.value?.recordSurface as { surfaceScore?: number; surfaceGrade?: string; scratchCount?: number } | undefined);
+const isAudioUnavailable = computed(() => album.value?.audioScore == null || !album.value?.audioGrade || album.value.audioGrade === '분석 불가');
+const audioGradeText = computed(() => isAudioUnavailable.value ? '분석 불가' : album.value?.audioGrade || '분석 불가');
+const audioScoreText = computed(() => isAudioUnavailable.value ? '분석 불가' : `${album.value?.audioScore || 0}점`);
 const surfaceScore = computed(() => recordSurface.value?.surfaceScore || 0);
-const scratchCountText = computed(() => typeof recordSurface.value?.scratchCount === 'number' ? `${recordSurface.value.scratchCount}개` : '확인 필요');
-const openSellerChat = () => {
-  if (!album.value) return;
-  const chatId = makeOneToOneChatId(album.value.id, store.user.id, album.value.seller.id);
-  router.push({
-    path: `/transaction/chat/${chatId}`,
-    query: {
-      listingId: album.value.id,
-      recipientId: album.value.seller.id,
-      recipientName: album.value.seller.name,
-    },
-  });
-};
-const approveBuyOrder = async () => {
-  if (!album.value || instantSelling.value) return;
-  instantSelling.value = true;
-  try {
-    const result = await instantSellListing(album.value.id, store.user.id);
-    if (result.listing) {
-      store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing!.id)];
-    }
-    const buyerId = result.buyOrder?.buyerId || result.transaction?.buyerId || '';
-    const buyerName = result.buyOrder?.buyerName || result.buyOrder?.buyerAlias || '구매자';
-    const tradePrice = result.transaction?.price || result.buyOrder?.maxPrice || instantSalePrice.value || album.value.price;
-    saveActiveTrade({
-      albumId: album.value.id,
-      buyerName,
-      offerPrice: tradePrice,
-      acceptedAt: new Date().toISOString(),
-      status: 'selling',
-    });
-    const chatId = result.chatId || result.transaction?.chatId || makeOneToOneChatId(album.value.id, buyerId, store.user.id);
-    router.push({
-      path: `/transaction/chat/${chatId}`,
-      query: {
-        listingId: album.value.id,
-        recipientId: buyerId,
-        recipientName: buyerName,
-      },
-    });
-  } catch (error) {
-    alert(error instanceof Error ? error.message : '구매대기 승인에 실패했습니다.');
-  } finally {
-    instantSelling.value = false;
-  }
-};
+const surfaceGradeText = computed(() => recordSurface.value?.surfaceGrade || (surfaceScore.value ? gradeFromScore(surfaceScore.value) : '확인 필요'));
+const surfaceScoreText = computed(() => surfaceScore.value ? `${surfaceScore.value}점` : '확인 필요');
+const DESCRIPTION_PREVIEW_LENGTH = 92;
+const descriptionText = computed(() => album.value?.description?.trim() || '등록된 상세 설명이 없습니다.');
+const showDescriptionToggle = computed(() => descriptionText.value.length > DESCRIPTION_PREVIEW_LENGTH || descriptionText.value.includes('\n'));
+const visibleDescription = computed(() => {
+  if (!showDescriptionToggle.value || descriptionExpanded.value) return descriptionText.value;
+  return `${descriptionText.value.replace(/\s+/g, ' ').slice(0, DESCRIPTION_PREVIEW_LENGTH).trim()}...`;
+});
 const hideCurrentListing = async () => {
   if (!album.value || isHidingListing.value) return;
   if (!confirm('이 판매글을 목록에서 내릴까요?')) return;
@@ -345,15 +296,17 @@ const hideCurrentListing = async () => {
   alert(result.message);
   if (result.ok) router.push('/app/profile');
 };
-const loadMarketAdvice = async () => {
-  if (!album.value || marketLoading.value) return;
-  marketLoading.value = true;
+const loadBuyOrderMatches = async () => {
+  if (!album.value || !isOwnListing.value || matchesLoading.value) return;
+  matchesLoading.value = true;
   try {
-    marketAdvice.value = await fetchMarketAdvice(album.value.id);
+    const result = await fetchBuyOrderMatches(album.value.id);
+    buyOrderMatches.value = result.matches || [];
   } catch {
-    marketAdvice.value = null;
+    buyOrderMatches.value = [];
   } finally {
-    marketLoading.value = false;
+    matchesLoaded.value = true;
+    matchesLoading.value = false;
   }
 };
 const toggleWishlist = async () => {
@@ -371,12 +324,52 @@ const toggleWishlist = async () => {
     wishlistSaving.value = false;
   }
 };
+
+function gradeFromScore(score: number) {
+  if (score >= 96) return 'M';
+  if (score >= 88) return 'NM';
+  if (score >= 80) return 'EX';
+  if (score >= 70) return 'VG+';
+  if (score >= 58) return 'VG';
+  if (score >= 45) return 'G';
+  return 'P';
+}
+const formatSampleTime = (seconds?: number) => {
+  const safeSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const remainingSeconds = safeSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+};
+const sampleTimeRange = (sample: SampleItem) => `${formatSampleTime(sample.startSeconds)}-${formatSampleTime(sample.endSeconds)}`;
 const sampleItems = computed<SampleItem[]>(() => {
   const samples = album.value?.audioSamples || {};
-  const goodStart = Number(samples.good?.startSeconds || 0);
-  const goodEnd = Number(samples.good?.endSeconds || samples.good?.durationSeconds || 20);
-  const noisyStart = Number(samples.noisy?.startSeconds || 0);
-  const noisyEnd = Number(samples.noisy?.endSeconds || samples.noisy?.durationSeconds || 15);
+  if (samples.sample) {
+    const sampleStart = Number(samples.sample.startSeconds ?? 0);
+    const sampleDuration = Number(samples.sample.durationSeconds || 60);
+    const sampleEnd = Number(samples.sample.endSeconds ?? sampleStart + sampleDuration);
+    const sampleDataUrl = samples.sample.dataUrl;
+    return [{
+      kind: 'sample' as const,
+      label: '음질 샘플',
+      name: samples.sample.name || `${album.value?.title || 'LP'} 음질 샘플`,
+      dataUrl: sampleDataUrl,
+      primaryUrl: sampleDataUrl ? resolveSampleUrl(sampleDataUrl) : '',
+      fallbackUrl: sampleDataUrl ? resolveSampleFallbackUrl(sampleDataUrl) : '',
+      mimeType: sampleMimeType(sampleDataUrl),
+      startSeconds: sampleStart,
+      endSeconds: sampleEnd,
+      durationSeconds: Math.max(1, sampleEnd - sampleStart),
+      recordedAt: samples.sample.recordedAt,
+    }];
+  }
+  const goodStart = Number(samples.good?.startSeconds ?? 0);
+  const goodDuration = Number(samples.good?.durationSeconds || 20);
+  const goodEnd = Number(samples.good?.endSeconds ?? goodStart + goodDuration);
+  const noisyStart = Number(samples.noisy?.startSeconds ?? 0);
+  const noisyDuration = Number(samples.noisy?.durationSeconds || 15);
+  const noisyEnd = Number(samples.noisy?.endSeconds ?? noisyStart + noisyDuration);
   const goodDataUrl = samples.good?.dataUrl;
   const noisyDataUrl = samples.noisy?.dataUrl;
   return [
@@ -408,9 +401,81 @@ const sampleItems = computed<SampleItem[]>(() => {
     },
   ];
 });
-const sampleDescription = computed(() => album.value?.audioSamples?.good || album.value?.audioSamples?.noisy
+const sampleDescription = computed(() => album.value?.audioSamples?.sample || album.value?.audioSamples?.good || album.value?.audioSamples?.noisy
   ? '판매자가 등록한 음질 샘플'
   : `${album.value?.title || 'LP'} 미리듣기 샘플`);
+const samplePlayingText = computed(() => {
+  const playing = sampleItems.value.find(sample => sample.kind === samplePlaying.value);
+  return playing ? `${playing.label} 재생 중` : '';
+});
+
+const renderListingFallbackMap = (point: { lat: number; lng: number; title: string; addressName: string }) => {
+  listingFallbackMapHtml.value = renderStaticMapHtml(point, {
+    zoom: 15,
+    tileRadius: 2,
+    markerSize: 26,
+    showInfo: true,
+  });
+};
+
+const relayoutListingMap = () => {
+  listingMap?.relayout();
+};
+
+const renderListingMap = async () => {
+  await nextTick();
+  const container = listingMapContainer.value;
+  const query = album.value?.location?.trim() || '';
+  const requestId = ++listingMapRequest;
+  if (!container || !query) return;
+
+  listingMapMessage.value = '지도를 불러오는 중입니다.';
+  const coordinatePoint = parseCoordinatePoint(query);
+  if (coordinatePoint) {
+    listingMarker?.setMap(null);
+    renderListingFallbackMap(coordinatePoint);
+    listingMapMessage.value = '';
+    return;
+  }
+
+  const restPoint = await findLocationPointByRest(query).catch(() => null);
+  if (requestId !== listingMapRequest) return;
+  if (restPoint) {
+    listingMarker?.setMap(null);
+    renderListingFallbackMap(restPoint);
+    listingMapMessage.value = '';
+    return;
+  }
+
+  if (!getKakaoMapJavaScriptKey()) {
+    listingMapMessage.value = '지도 위치를 찾지 못했습니다.';
+    return;
+  }
+
+  try {
+    listingFallbackMapHtml.value = '';
+    const kakao = await loadKakaoMaps();
+    if (requestId !== listingMapRequest || !listingMapContainer.value) return;
+    const point = await findKakaoMapPoint(query, kakao);
+    if (requestId !== listingMapRequest || !point) {
+      listingMapMessage.value = '지도 위치를 찾지 못했습니다.';
+      return;
+    }
+    const center = new kakao.maps.LatLng(point.lat, point.lng);
+    if (!listingMap) {
+      listingMap = new kakao.maps.Map(listingMapContainer.value, { center, level: 3 });
+    } else {
+      listingMap.setCenter(center);
+      listingMap.relayout();
+    }
+    listingMarker?.setMap(null);
+    listingMarker = new kakao.maps.Marker({ position: center, map: listingMap });
+    listingMapMessage.value = '';
+    window.setTimeout(relayoutListingMap, 0);
+  } catch {
+    listingMapMessage.value = '지도 위치를 찾지 못했습니다.';
+  }
+};
 
 onMounted(async () => {
   if (!album.value) await store.loadListingsFromServer();
@@ -420,8 +485,9 @@ onMounted(async () => {
         if (result.listing) store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing.id)];
       })
       .catch(() => undefined);
-    void loadMarketAdvice();
+    if (isOwnListing.value) void loadBuyOrderMatches();
     void store.loadWishlistFavorites();
+    void renderListingMap();
   }
 });
 
@@ -465,7 +531,7 @@ const stopInlineSampleAtEnd = (sample: SampleItem, event: Event) => {
   handleInlineSamplePause(sample);
 };
 
-const playSample = (kind: 'good' | 'noisy') => {
+const playSample = (kind: 'sample' | 'good' | 'noisy') => {
   if (samplePlaying.value || !album.value) return;
   const savedSample = sampleItems.value.find(item => item.kind === kind);
   if (savedSample?.dataUrl) {
@@ -512,5 +578,8 @@ const playSample = (kind: 'good' | 'noisy') => {
 
 };
 
-onBeforeUnmount(stopSample);
+onBeforeUnmount(() => {
+  stopSample();
+  listingMarker?.setMap(null);
+});
 </script>

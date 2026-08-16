@@ -169,9 +169,10 @@ const updateStatus = async (offerId: string, status: 'accepted' | 'rejected') =>
     });
     const payload = await response.json().catch(() => ({})) as { detail?: string; offer?: ReceivedOffer };
     if (!response.ok) throw new Error(payload.detail || '가격 제안 상태 변경에 실패했습니다.');
-    if (payload.offer?.chatId) offer.chatId = payload.offer.chatId;
+    if (payload.offer) Object.assign(offer, payload.offer);
     if (status === 'accepted') {
       saveActiveTrade({ albumId: offer.album.id, buyerName: offer.buyerName, offerPrice: offer.offerPrice, acceptedAt: new Date().toISOString(), status: 'selling' });
+      store.listings = store.listings.filter(album => album.id !== offer.album.id);
       openOfferChat(offer);
     }
   } catch (error) {

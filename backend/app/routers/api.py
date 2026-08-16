@@ -191,26 +191,90 @@ def risk_label(value: float, medium: float, high: float) -> str:
 
 
 def grade_from_score(score: int) -> str:
-    if score >= 90:
+    if score >= 96:
+        return "M"
+    if score >= 88:
         return "NM"
-    if score >= 82:
+    if score >= 80:
+        return "EX"
+    if score >= 70:
         return "VG+"
-    if score >= 72:
+    if score >= 58:
         return "VG"
-    if score >= 62:
-        return "G+"
-    return "G"
+    if score >= 45:
+        return "G"
+    return "P"
 
 
-def playback_impact(scratch_risk: str, reflection_risk: str) -> str:
-    if scratch_risk == "high":
-        return "높음"
-    if scratch_risk == "medium" or reflection_risk == "high":
-        return "주의"
-    return "낮음"
-
-
-MOCK_LISTINGS: list[dict[str, Any]] = []
+MOCK_LISTINGS: list[dict[str, Any]] = [
+    {
+        "id": "listing-abbey-road-anniversary",
+        "title": "Abbey Road (Anniversary Edition)",
+        "artist": "The Beatles",
+        "year": 2019,
+        "genre": "록",
+        "catalog_number": "0602577915123",
+        "release_label": "Apple Records / Universal Music",
+        "release_country": "EU",
+        "pressing_condition": "2019 Anniversary Edition · New Mix by Giles Martin and Sam Okell",
+        "price": 72000,
+        "min_price": 62000,
+        "max_price": 89000,
+        "base_price": 74000,
+        "recommended_price": 76000,
+        "instant_sale_price": 69000,
+        "seller_price": 72000,
+        "audio_grade": "NM",
+        "audio_score": 91,
+        "jacket_grade": "NM",
+        "jacket_score": 93,
+        "is_rare": False,
+        "is_first_press": False,
+        "images": ["/images/the-beatles-abbey-road-anniversary.jpg"],
+        "audio_samples": {
+            "good": {
+                "name": "Abbey Road Medley 안정 구간",
+                "durationSeconds": 20,
+                "dataUrl": "/audio-samples/abbey-road-medley-vinyl.mp3",
+                "startSeconds": 35,
+                "endSeconds": 55,
+                "recordedAt": "2026-07-26T14:25:36.000+09:00",
+            },
+            "noisy": {
+                "name": "Abbey Road Medley 도입 확인 구간",
+                "durationSeconds": 15,
+                "dataUrl": "/audio-samples/abbey-road-medley-vinyl.mp3",
+                "startSeconds": 5,
+                "endSeconds": 20,
+                "recordedAt": "2026-07-26T14:25:36.000+09:00",
+            },
+        },
+        "analysis_report": {
+            "pressing": "2019 Anniversary Edition · 50주년 리믹스",
+            "recordSurface": {"surfaceScore": 92, "surfaceGrade": "NM", "scratchCount": 0},
+            "jacket": {"jacketGrade": "NM", "jacketScore": 93},
+            "audio": {
+                "summary": "음질 NM 등급, 91점입니다.",
+                "playbackRisk": None,
+            },
+        },
+        "description": "사용자가 제공한 실물 커버 이미지와 Abbey Road Medley 바이닐 MP3 샘플을 연결한 더미 판매글입니다.\n수축 비닐이 남아 있는 Anniversary Edition으로, 전면 스티커의 Giles Martin / Sam Okell New Mix 정보를 기준으로 등록했습니다.",
+        "tags": ["The Beatles", "Abbey Road", "Anniversary Edition", "Giles Martin", "Sam Okell", "록", "LP"],
+        "seller_id": "seller-apple-studio",
+        "seller_name": "apple_studio",
+        "seller_rating": 4.9,
+        "seller_transaction_count": 38,
+        "location": "서울 마포구",
+        "views": 64,
+        "view_count": 64,
+        "favorite_count": 18,
+        "buy_order_count": 3,
+        "wishlist_count": 11,
+        "market_key": "catalog:0602577915123|pressing:2019 anniversary edition new mix by giles martin and sam okell",
+        "created_at": "2026-07-26T14:25:36.000+09:00",
+        "status": "published",
+    },
+]
 
 def user_payload(user_id: str, username: str, email: str, genres: list[str] | None = None) -> dict[str, Any]:
     return {
@@ -356,6 +420,123 @@ def update_user_review_stats(user_id: str) -> dict[str, Any] | None:
     return public_user(user)
 
 
+def kakao_rest_api_key() -> str:
+    return os.getenv("KAKAO_REST_API_KEY", "").strip()
+
+
+def kakao_place_candidate(document: dict[str, Any], fallback_keyword: str) -> dict[str, Any]:
+    road_address = str(document.get("road_address_name") or "")
+    jibun_address = str(document.get("address_name") or "")
+    place_name = str(document.get("place_name") or "")
+    category = str(document.get("category_name") or "")
+    return {
+        "id": str(document.get("id") or stable_id("kakao-place", json.dumps(document, ensure_ascii=False, sort_keys=True))),
+        "placeName": place_name or road_address or jibun_address or fallback_keyword,
+        "roadAddress": road_address,
+        "jibunAddress": jibun_address,
+        "address": road_address or jibun_address or place_name or fallback_keyword,
+        "category": category,
+        "latitude": str(document.get("y") or ""),
+        "longitude": str(document.get("x") or ""),
+    }
+
+
+async def kakao_local_search(endpoint: str, keyword: str, count: int) -> list[dict[str, Any]]:
+    key = kakao_rest_api_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="KAKAO_REST_API_KEY is not configured.")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(
+                f"https://dapi.kakao.com/v2/local/search/{endpoint}.json",
+                headers={"Authorization": f"KakaoAK {key}"},
+                params={"query": keyword, "size": max(1, min(count, 15))},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("kakao local search failed: %s", exc.response.text[:300])
+        raise HTTPException(status_code=502, detail="Kakao local search failed.") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("kakao local search request error: %s", exc)
+        raise HTTPException(status_code=502, detail="Kakao local search request failed.") from exc
+    return [kakao_place_candidate(item, keyword) for item in payload.get("documents", [])]
+
+
+async def kakao_coord_to_address(lat: float, lng: float) -> dict[str, Any] | None:
+    key = kakao_rest_api_key()
+    if not key:
+        raise HTTPException(status_code=503, detail="KAKAO_REST_API_KEY is not configured.")
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            response = await client.get(
+                "https://dapi.kakao.com/v2/local/geo/coord2address.json",
+                headers={"Authorization": f"KakaoAK {key}"},
+                params={"x": lng, "y": lat},
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as exc:
+        logger.warning("kakao coord2address failed: %s", exc.response.text[:300])
+        raise HTTPException(status_code=502, detail="Kakao coord2address failed.") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("kakao coord2address request error: %s", exc)
+        raise HTTPException(status_code=502, detail="Kakao coord2address request failed.") from exc
+
+    document = (payload.get("documents") or [None])[0]
+    if not document:
+        return None
+    road = document.get("road_address") or {}
+    address = document.get("address") or {}
+    road_address = str(road.get("address_name") or "")
+    jibun_address = str(address.get("address_name") or "")
+    region = " ".join(
+        str(address.get(key) or "")
+        for key in ("region_1depth_name", "region_2depth_name", "region_3depth_name")
+    ).strip()
+    return {
+        "placeName": region or road_address or jibun_address or "현재 위치",
+        "roadAddress": road_address,
+        "jibunAddress": jibun_address,
+        "address": road_address or jibun_address or region,
+        "latitude": f"{lat:.8f}",
+        "longitude": f"{lng:.8f}",
+    }
+
+
+@router.get("/address/api-key")
+async def address_api_key_status() -> dict[str, Any]:
+    return {"hasKey": bool(kakao_rest_api_key()), "provider": "kakao"}
+
+
+@router.get("/address/search")
+async def search_address(keyword: str, count: int = 5) -> dict[str, Any]:
+    query = keyword.strip()
+    if len(query) < 2:
+        return {"source": "kakao", "candidates": [], "message": "검색어를 2글자 이상 입력해 주세요."}
+
+    candidates = await kakao_local_search("keyword", query, count)
+    if not candidates:
+        candidates = await kakao_local_search("address", query, count)
+    return {
+        "source": "kakao",
+        "candidates": candidates[: max(1, min(count, 15))],
+        "message": "" if candidates else "일치하는 장소가 없습니다.",
+    }
+
+
+@router.get("/address/reverse")
+async def reverse_address(lat: float, lng: float) -> dict[str, Any]:
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        raise HTTPException(status_code=400, detail="Invalid coordinates.")
+    candidate = await kakao_coord_to_address(lat, lng)
+    return {
+        "source": "kakao",
+        "candidate": candidate,
+        "message": "" if candidate else "해당 좌표의 주소를 찾지 못했습니다.",
+    }
+
+
 async def google_profile_from_credential(credential: str) -> dict[str, Any]:
     client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     try:
@@ -384,26 +565,6 @@ async def google_profile_from_credential(credential: str) -> dict[str, Any]:
     }
 
 
-RARITY_KEYWORDS = (
-    "희귀",
-    "rare",
-    "초반",
-    "first press",
-    "firstpress",
-    "오리지널",
-    "original",
-    "한정",
-    "limited",
-    "프로모",
-    "promo",
-    "테스트",
-    "test pressing",
-    "번호판",
-    "numbered",
-    "obi",
-)
-
-
 def clean_tags(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -415,33 +576,94 @@ def clean_tags(value: Any) -> list[str]:
     return tags[:12]
 
 
-def text_has_rarity_hint(value: str) -> bool:
-    normalized = value.lower().replace("-", " ")
-    return any(keyword in normalized for keyword in RARITY_KEYWORDS)
-
-
-def listing_is_first_press(item: dict[str, Any], analysis_report: dict[str, Any] | None = None) -> bool:
-    pressing = str(item.get("pressing") or item.get("pressing_condition") or item.get("pressingCondition") or (analysis_report or {}).get("pressing") or "")
-    pressing_lower = pressing.lower()
-    return bool(
-        item.get("is_first_press")
-        or item.get("isFirstPress")
-        or "초반" in pressing
-        or "first" in pressing_lower
-    )
-
-
-def listing_is_rare(item: dict[str, Any], tags: list[str] | None = None, analysis_report: dict[str, Any] | None = None) -> bool:
-    if item.get("is_rare") or item.get("isRare") or item.get("is_first_press") or item.get("isFirstPress"):
-        return True
-    tag_text = " ".join(tags if tags is not None else clean_tags(item.get("tags")))
-    pressing = str(item.get("pressing") or item.get("pressing_condition") or item.get("pressingCondition") or (analysis_report or {}).get("pressing") or "")
-    return text_has_rarity_hint(f"{tag_text} {pressing}")
-
-
 def read_list(path: str) -> list[dict[str, Any]]:
     data = read_json(path, [])
     return data if isinstance(data, list) else []
+
+
+INLINE_MEDIA_LIMIT = 120_000
+
+
+def compact_inline_media(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    if value.startswith("data:") and len(value) > INLINE_MEDIA_LIMIT:
+        return ""
+    return value
+
+
+def compact_listing_media_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    compacted = [compact_inline_media(item) for item in value]
+    return [item for item in compacted if item][:5]
+
+
+def compact_listing_audio_samples(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compacted: dict[str, Any] = {}
+    for key, sample in value.items():
+        if not isinstance(sample, dict):
+            continue
+        next_sample = dict(sample)
+        if "dataUrl" in next_sample:
+            next_sample["dataUrl"] = compact_inline_media(next_sample.get("dataUrl"))
+        compacted[str(key)] = {sample_key: sample_value for sample_key, sample_value in next_sample.items() if sample_value != ""}
+    return compacted
+
+
+def compact_listing_analysis_report(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    compacted = dict(value)
+    for media_key in ("coverImageDataUrl", "recordImageDataUrl", "recordVideoDataUrl", "audioSamples"):
+        compacted.pop(media_key, None)
+    return compacted
+
+
+def compact_listing_for_storage(listing: dict[str, Any]) -> dict[str, Any]:
+    item = dict(listing)
+    item["images"] = compact_listing_media_list(item.get("images"))
+    for snake_key, camel_key in (
+        ("cover_image_data_url", "coverImageDataUrl"),
+        ("record_image_data_url", "recordImageDataUrl"),
+        ("record_video_data_url", "recordVideoDataUrl"),
+    ):
+        item[snake_key] = compact_inline_media(item.get(snake_key) or item.get(camel_key))
+        item.pop(camel_key, None)
+    item["audio_samples"] = compact_listing_audio_samples(item.get("audio_samples") or item.get("audioSamples"))
+    item.pop("audioSamples", None)
+    item["analysis_report"] = compact_listing_analysis_report(item.get("analysis_report") or item.get("analysisReport"))
+    item.pop("analysisReport", None)
+    return item
+
+
+def compact_listing_in_place(listing: dict[str, Any]) -> dict[str, Any]:
+    compacted = compact_listing_for_storage(listing)
+    listing.clear()
+    listing.update(compacted)
+    return listing
+
+
+def compact_listing_storage_list(listings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    compacted = [compact_listing_for_storage(item) for item in listings]
+    return compacted, compacted != listings
+
+
+def write_listings(listings: list[dict[str, Any]]) -> None:
+    compacted, _ = compact_listing_storage_list(listings)
+    write_json(LISTINGS_PATH, compacted)
+
+
+def compact_persisted_listings() -> None:
+    listings = read_list(LISTINGS_PATH)
+    if not listings:
+        return
+    compacted, changed = compact_listing_storage_list(listings)
+    if changed:
+        write_json(LISTINGS_PATH, compacted)
+        logger.info("Compacted stored listings media payloads: %s listings", len(compacted))
 
 
 def market_validation_detail(message: str, estimate: dict[str, Any]) -> dict[str, Any]:
@@ -611,6 +833,8 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
     recommended_price = int(item.get("recommended_price") or item.get("recommendedPrice") or 0)
     instant_sale_price = int(item.get("instant_sale_price") or item.get("instantSalePrice") or 0)
     seller_price = int(item.get("seller_price") or item.get("sellerPrice") or price)
+    audio_grade = item.get("audio_grade") or item.get("audioGrade") or ""
+    audio_score = int(item.get("audio_score") or item.get("audioScore") or 0)
     favorite_count = int(item.get("favorite_count") or item.get("favoriteCount") or 0)
     view_count = int(item.get("view_count") or item.get("viewCount") or item.get("views") or 0)
     buy_order_count = int(item.get("buy_order_count") or item.get("buyOrderCount") or 0)
@@ -633,8 +857,6 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
     record_image = item.get("record_image_data_url") or item.get("recordImageDataUrl") or analysis_report.get("recordImageDataUrl")
     record_video = item.get("record_video_data_url") or item.get("recordVideoDataUrl") or analysis_report.get("recordVideoDataUrl")
     tags = clean_tags(item.get("tags"))
-    is_first_press = listing_is_first_press(item, analysis_report)
-    is_rare = listing_is_rare(item, tags, analysis_report)
     return {
         "id": str(item.get("id") or stable_id("listing", json.dumps(item, ensure_ascii=False))),
         "title": item.get("title") or "Untitled",
@@ -649,13 +871,13 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
         "pressingCondition": item.get("pressing_condition") or item.get("pressingCondition") or analysis_report.get("pressing"),
         "price": price,
         "priceRange": {"min": min_price, "max": max_price},
-        "audioGrade": item.get("audio_grade") or item.get("audioGrade") or "VG",
-        "audioScore": int(item.get("audio_score") or item.get("audioScore") or 0),
+        "audioGrade": audio_grade or "분석 불가",
+        "audioScore": audio_score,
         "audioSamples": audio_samples if isinstance(audio_samples, dict) else {},
         "jacketGrade": item.get("jacket_grade") or item.get("jacketGrade") or "VG",
         "jacketScore": int(item.get("jacket_score") or item.get("jacketScore") or 0),
-        "isRare": is_rare,
-        "isFirstPress": is_first_press,
+        "isRare": False,
+        "isFirstPress": False,
         "tags": tags,
         "images": item.get("images") if isinstance(item.get("images"), list) else [],
         "coverImageDataUrl": cover_image or "",
@@ -666,8 +888,8 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
         "seller": {
             "id": seller_id,
             "name": seller_name,
-            "rating": float(seller.get("rating", 0) or 0),
-            "transactionCount": int(seller.get("transactionCount", 0) or 0),
+            "rating": float(item.get("seller_rating") or item.get("sellerRating") or seller.get("rating", 0) or 0),
+            "transactionCount": int(item.get("seller_transaction_count") or item.get("sellerTransactionCount") or seller.get("transactionCount", 0) or 0),
         },
         "location": item.get("location") or "서울",
         "views": view_count,
@@ -746,13 +968,20 @@ def compact_listing_album(album: dict[str, Any]) -> dict[str, Any]:
     return item
 
 
+UNAVAILABLE_LISTING_STATUSES = {"hidden", "reserved", "sold", "deleted"}
+
+
+def is_market_visible_listing(item: dict[str, Any]) -> bool:
+    return str(item.get("status") or "published").lower() not in UNAVAILABLE_LISTING_STATUSES
+
+
 def all_albums() -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
     for item in MOCK_LISTINGS:
-        if str(item.get("status") or "published") != "hidden":
+        if is_market_visible_listing(item):
             merged[str(item.get("id") or stable_id("listing", json.dumps(item, ensure_ascii=False)))] = listing_to_album(item)
     for item in read_json(LISTINGS_PATH, []):
-        if str(item.get("status") or "published") != "hidden":
+        if is_market_visible_listing(item):
             album = listing_to_album(item)
             merged[str(album.get("id"))] = album
     return list(merged.values())
@@ -1171,10 +1400,19 @@ async def delete_listing_draft_by_id(user_id: str, draft_id: str):
     drafts_path = os.path.join(DATA_DIR, "drafts.json")
     drafts = read_json(drafts_path, {})
     user_drafts = drafts.get(user_id)
+    if isinstance(user_drafts, dict):
+        if draft_id == "legacy":
+            drafts.pop(user_id, None)
+            write_json(drafts_path, drafts)
+            return {"deleted": True}
+        return {"deleted": False}
     if not isinstance(user_drafts, list):
         return {"deleted": False}
     next_drafts = [item for item in user_drafts if str(item.get("id")) != draft_id]
-    drafts[user_id] = next_drafts
+    if next_drafts:
+        drafts[user_id] = next_drafts
+    else:
+        drafts.pop(user_id, None)
     write_json(drafts_path, drafts)
     return {"deleted": len(next_drafts) != len(user_drafts)}
 
@@ -1453,8 +1691,8 @@ async def list_listings(q: str | None = None):
 async def create_listing(payload: ListingCreate):
     listing = payload.model_dump()
     listing["tags"] = clean_tags(listing.get("tags"))
-    listing["is_first_press"] = listing_is_first_press(listing, listing.get("analysis_report"))
-    listing["is_rare"] = listing_is_rare(listing, listing["tags"], listing.get("analysis_report"))
+    listing["is_first_press"] = False
+    listing["is_rare"] = False
     listing["id"] = f"listing-{uuid4().hex[:10]}"
     listing["seller_id"] = payload.user_id or "seller1"
     listing["created_at"] = now_iso()
@@ -1466,8 +1704,9 @@ async def create_listing(payload: ListingCreate):
     if not ok:
         raise HTTPException(status_code=422, detail=market_validation_detail(message, estimate))
     apply_market_snapshot(listing, estimate)
+    listing = compact_listing_for_storage(listing)
     listings.insert(0, listing)
-    write_json(LISTINGS_PATH, listings)
+    write_listings(listings)
     wishlist_notification_for_listing(listing)
     return {"status": "ok", "persisted": True, "listing": listing_to_album(listing)}
 
@@ -1485,8 +1724,8 @@ async def update_listing(listing_id: str, payload: ListingCreate, user_id: str |
                 raise HTTPException(status_code=403, detail="판매글을 수정할 권한이 없습니다.")
             listing.update(payload.model_dump())
             listing["tags"] = clean_tags(listing.get("tags"))
-            listing["is_first_press"] = listing_is_first_press(listing, listing.get("analysis_report"))
-            listing["is_rare"] = listing_is_rare(listing, listing["tags"], listing.get("analysis_report"))
+            listing["is_first_press"] = False
+            listing["is_rare"] = False
             listing["id"] = listing_id
             listing["seller_id"] = seller_id or payload.user_id or "seller1"
             listing["updated_at"] = now_iso()
@@ -1494,11 +1733,12 @@ async def update_listing(listing_id: str, payload: ListingCreate, user_id: str |
             if not ok:
                 raise HTTPException(status_code=422, detail=market_validation_detail(message, estimate))
             apply_market_snapshot(listing, estimate)
+            compact_listing_in_place(listing)
             updated = listing
             break
     if not updated:
         raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
-    write_json(LISTINGS_PATH, listings)
+    write_listings(listings)
     if previous_signature != listing_identity_signature(updated):
         wishlist_notification_for_listing(updated)
     return {"status": "ok", "persisted": True, "listing": listing_to_album(updated)}
@@ -1518,7 +1758,7 @@ async def hide_listing(listing_id: str, user_id: str | None = None):
             break
     if not updated:
         raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
-    write_json(LISTINGS_PATH, listings)
+    write_listings(listings)
     return {"status": "hidden", "listingId": listing_id}
 
 
@@ -1587,8 +1827,8 @@ async def get_market_price_estimate(
             "audio_grade": audio_grade or "VG+",
             "jacket_grade": jacket_grade or audio_grade or "VG+",
             "pressing_condition": pressing_condition,
-            "is_first_press": is_first_press,
-            "is_rare": is_rare,
+            "is_first_press": False,
+            "is_rare": False,
             "location": location,
         }
     if price is not None:
@@ -1627,7 +1867,8 @@ async def create_buy_order(payload: BuyOrderCreate):
     updated_listing = None
     if listing and listing in listings:
         recalculate_listing_market(listing, listings)
-        write_json(LISTINGS_PATH, listings)
+        compact_listing_in_place(listing)
+        write_listings(listings)
         updated_listing = listing_to_album(listing)
     matches = find_matching_buy_orders(listing, buy_orders) if listing else []
     users = read_json(USERS_PATH, {})
@@ -1664,14 +1905,17 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
     seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
     if payload and payload.seller_id and seller_id and payload.seller_id != seller_id:
         raise HTTPException(status_code=403, detail="즉시 판매 권한이 없습니다.")
-    if str(listing.get("status") or "published") in {"hidden", "sold"}:
+    if str(listing.get("status") or "published") in UNAVAILABLE_LISTING_STATUSES:
         raise HTTPException(status_code=400, detail="판매 가능한 상태가 아닙니다.")
 
     buy_orders = read_list(BUY_ORDERS_PATH)
     matches = find_matching_buy_orders(listing, buy_orders)
     if not matches:
         raise HTTPException(status_code=404, detail="조건에 맞는 구매 대기가 없습니다.")
-    order = matches[0]
+    selected_order_id = str(payload.buy_order_id or "").strip() if payload else ""
+    order = next((item for item in matches if str(item.get("id")) == selected_order_id), None) if selected_order_id else matches[0]
+    if order is None:
+        raise HTTPException(status_code=404, detail="선택한 구매 대기를 찾을 수 없습니다.")
     sale_price = int(order.get("max_price") or order.get("maxPrice") or 0)
     buyer_id = str(order.get("buyer_id") or order.get("buyerId") or "")
     users = read_json(USERS_PATH, {})
@@ -1738,7 +1982,8 @@ async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | No
     transactions.insert(0, transaction)
     history = read_list(MARKET_PRICE_HISTORY_PATH)
     history.append(history_item)
-    write_json(LISTINGS_PATH, listings)
+    compact_listing_in_place(listing)
+    write_listings(listings)
     write_json(BUY_ORDERS_PATH, buy_orders)
     write_json(TRANSACTIONS_PATH, transactions)
     write_json(MARKET_PRICE_HISTORY_PATH, history)
@@ -1782,7 +2027,8 @@ async def record_listing_view(listing_id: str):
     listing["views"] = next_count
     listing["view_count"] = next_count
     recalculate_listing_market(listing, listings)
-    write_json(LISTINGS_PATH, listings)
+    compact_listing_in_place(listing)
+    write_listings(listings)
     return {"status": "ok", "listing": listing_to_album(listing)}
 
 
@@ -1795,7 +2041,8 @@ async def record_listing_favorite(listing_id: str, delta: int = 1):
     next_count = max(0, int(listing.get("favorite_count") or listing.get("favoriteCount") or 0) + (1 if delta >= 0 else -1))
     listing["favorite_count"] = next_count
     recalculate_listing_market(listing, listings)
-    write_json(LISTINGS_PATH, listings)
+    compact_listing_in_place(listing)
+    write_listings(listings)
     return {"status": "ok", "listing": listing_to_album(listing)}
 
 
@@ -1842,6 +2089,7 @@ def wishlist_matches_for_item(item: dict[str, Any]) -> list[dict[str, Any]]:
         listing_to_album(listing)
         for listing in source
         if wishlist_matches_listing(item, listing)
+        and is_market_visible_listing(listing)
         and str(listing.get("seller_id") or listing.get("user_id") or (listing.get("seller") or {}).get("id") or "") != owner_id
     ]
     matches.sort(key=lambda listing: str(listing.get("createdAt") or ""), reverse=True)
@@ -1935,7 +2183,8 @@ async def create_wishlist_item(payload: WishlistCreate, user_id: Annotated[str, 
     write_json(WISHLIST_PATH, wishlist)
     if listing and listing in listings:
         recalculate_listing_market(listing, listings)
-        write_json(LISTINGS_PATH, listings)
+        compact_listing_in_place(listing)
+        write_listings(listings)
     return {"status": "ok", "wishlistItem": compact_wishlist_item(item), "listing": listing_to_album(listing) if listing else None}
 
 
@@ -2144,11 +2393,16 @@ async def update_collection(
     return {"status": "ok", "collection": normalize_collection(updated)}
 
 
+def offer_album_for_listing(listing_id: str) -> dict[str, Any] | None:
+    listing = find_raw_listing(listing_id)
+    return listing_to_album(listing) if listing else None
+
+
 def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
     collection_id = str(payload.get("collectionId") or payload.get("collection_id") or "")
     listing_id = str(payload.get("listingId") or payload.get("listing_id") or collection_id)
     collection = find_collection(collection_id) if collection_id else None
-    album = collection_to_album(collection) if collection else find_album(listing_id)
+    album = collection_to_album(collection) if collection else offer_album_for_listing(listing_id)
     buyer_id = str(payload.get("buyerId") or payload.get("buyer_id") or "guest")
     seller_id = str(payload.get("sellerId") or payload.get("seller_id") or "")
     return {
@@ -2222,6 +2476,8 @@ async def create_offer(payload: OfferCreate):
         raise HTTPException(status_code=400, detail="제안 금액을 확인해 주세요.")
 
     seller_id = str(album["seller"]["id"])
+    if seller_id == payload.buyerId:
+        raise HTTPException(status_code=400, detail="내 판매글에는 가격 제안을 보낼 수 없습니다.")
     offer = normalize_offer(
         {
             "id": f"offer-{uuid4().hex[:10]}",
@@ -2258,7 +2514,7 @@ async def create_offer(payload: OfferCreate):
 @router.get("/users/{user_id}/offers/received")
 async def get_received_offers(user_id: str):
     offers = [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]
-    return {"offers": [offer for offer in offers if offer["sellerId"] == user_id and offer["album"] is not None]}
+    return {"offers": [offer for offer in offers if offer["sellerId"] == user_id and offer["buyerId"] != user_id and offer["album"] is not None]}
 
 
 @router.patch("/offers/{offer_id}")
@@ -2268,14 +2524,45 @@ async def update_offer_status(offer_id: str, payload: OfferStatusUpdate):
         raise HTTPException(status_code=400, detail="상태값을 확인해 주세요.")
     offers = read_json(OFFERS_PATH, [])
     updated: dict[str, Any] | None = None
+    stored_offer: dict[str, Any] | None = None
+    updated_at = now_iso()
     for offer in offers:
         if str(offer.get("id")) == offer_id:
             offer["status"] = status
-            offer["updatedAt"] = now_iso()
+            offer["updatedAt"] = updated_at
+            stored_offer = offer
             updated = normalize_offer(offer)
             break
     if not updated:
         raise HTTPException(status_code=404, detail="가격 제안을 찾을 수 없습니다.")
+
+    if status == "accepted" and updated["offerType"] == "listing":
+        listings = read_list(LISTINGS_PATH)
+        listing = find_raw_listing(updated["listingId"], listings)
+        if not listing or listing not in listings:
+            raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+        current_status = str(listing.get("status") or "published").lower()
+        if current_status in {"hidden", "sold", "deleted"}:
+            raise HTTPException(status_code=400, detail="판매 가능한 상태가 아닙니다.")
+        reserved_buyer_id = str(listing.get("buyer_id") or listing.get("buyerId") or "")
+        if current_status == "reserved" and reserved_buyer_id and reserved_buyer_id != updated["buyerId"]:
+            raise HTTPException(status_code=400, detail="이미 다른 거래가 진행 중인 판매글입니다.")
+        listing["status"] = "reserved"
+        listing["reserved_at"] = updated_at
+        listing["buyer_id"] = updated["buyerId"]
+        listing["accepted_offer_id"] = updated["id"]
+        listing["sold_price"] = updated["offerPrice"]
+        listing["updated_at"] = updated_at
+        recalculate_listing_market(listing, listings)
+        compact_listing_in_place(listing)
+        write_listings(listings)
+        for offer in offers:
+            if str(offer.get("id")) != offer_id and str(offer.get("listingId") or offer.get("listing_id")) == updated["listingId"] and str(offer.get("status") or "pending") == "pending":
+                offer["status"] = "rejected"
+                offer["updatedAt"] = updated_at
+        if stored_offer is not None:
+            updated = normalize_offer(stored_offer)
+
     write_json(OFFERS_PATH, offers)
     chat_id = updated["chatId"]
     message = await save_chat_message(
@@ -2307,7 +2594,7 @@ async def get_user_chat_requests(user_id: str):
                 if message["senderId"] != user_id and message["recipientId"] != user_id:
                     continue
                 participant_id = message["recipientId"] if message["senderId"] == user_id else message["senderId"]
-                if not participant_id:
+                if not participant_id or participant_id == user_id:
                     continue
                 listing_id = message["listingId"] or listing_id_from_chat_id(str(chat_id))
                 canonical_id = make_one_to_one_chat_id(listing_id, user_id, participant_id)
@@ -2325,7 +2612,7 @@ async def get_user_chat_requests(user_id: str):
             participant_name = last["senderName"]
         listing_id = last["listingId"] or listing_id_from_chat_id(canonical_id)
         if participant_id:
-            album = find_album(listing_id)
+            album = offer_album_for_listing(listing_id)
             requests.append({
                 "id": canonical_id,
                 "chatId": canonical_id,
@@ -2370,14 +2657,19 @@ def save_notification_dismissed_ids(user_id: str, notification_ids: set[str]) ->
     write_json(NOTIFICATION_DISMISSES_PATH, dismisses)
 
 
-def collect_user_notifications(user_id: str) -> list[dict[str, Any]]:
+MAX_DYNAMIC_NOTIFICATION_SCAN = 80
+
+
+def collect_user_notifications(user_id: str, *, limit: int = 50) -> list[dict[str, Any]]:
     notifications: list[dict[str, Any]] = [
         dict(item)
         for item in read_list(NOTIFICATIONS_PATH)
         if str(item.get("userId") or item.get("user_id") or "") == user_id
     ]
-    for offer in [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]:
-        if offer["sellerId"] == user_id:
+    raw_offers = read_json(OFFERS_PATH, [])
+    offer_items = raw_offers[:MAX_DYNAMIC_NOTIFICATION_SCAN] if isinstance(raw_offers, list) else []
+    for offer in [normalize_offer(item) for item in offer_items]:
+        if offer["sellerId"] == user_id and offer["buyerId"] != user_id:
             notifications.append({
                 "id": f"offer-{offer['id']}",
                 "type": "offer",
@@ -2392,7 +2684,7 @@ def collect_user_notifications(user_id: str) -> list[dict[str, Any]]:
         for chat_id, room in chats.items():
             if not isinstance(room, list):
                 continue
-            for raw in reversed(room):
+            for raw in reversed(room[-MAX_DYNAMIC_NOTIFICATION_SCAN:]):
                 message = normalize_chat_message(str(chat_id), raw)
                 if message["recipientId"] == user_id and message["senderId"] != user_id:
                     notifications.append({
@@ -2413,7 +2705,7 @@ def collect_user_notifications(user_id: str) -> list[dict[str, Any]]:
     for notification in notifications:
         notification["isRead"] = bool(notification.get("isRead") or str(notification.get("id")) in read_ids)
     notifications.sort(key=lambda item: item["timestamp"], reverse=True)
-    return notifications[:50]
+    return notifications[:limit]
 
 
 @router.get("/users/me/notifications")
@@ -2516,25 +2808,21 @@ def surface_condition_from_image(content: bytes, content_type: str | None) -> di
 
 
 def fallback_surface(content: bytes, media_type: str) -> dict[str, Any]:
-    seed = int(hashlib.sha1(content[:200_000]).hexdigest()[:8], 16) if content else 0
-    scratch_count = (seed % 8) + (2 if media_type == "video" else 0)
-    reflection_bucket = (seed >> 4) % 4
-    scratch_risk = "high" if scratch_count >= 9 else "medium" if scratch_count >= 3 else "low"
-    reflection_risk = "high" if reflection_bucket >= 3 else "medium" if reflection_bucket else "low"
-    surface_score = max(45, min(86, 84 - scratch_count * 3 - reflection_bucket * 5 - ((seed >> 8) % 7)))
     return {
         "isRecord": True,
-        "confidence": min(90, surface_score + 3),
+        "analysisAvailable": False,
+        "analysisUnavailableReason": "서버가 표면 이미지를 정밀 판독하지 못했습니다.",
+        "confidence": 0,
         "signals": [
-            "서버가 이미지를 정밀 판독하지 못해 파일 특성 기반 보수 점수를 만들었습니다.",
-            f"스크래치 후보 {scratch_count}개, 반사 위험 {reflection_risk}로 임시 집계했습니다.",
+            "표면 정밀 분석이 완료되지 않아 점수와 등급을 표시하지 않습니다.",
         ],
         "source": "fallback",
         "persisted": False,
-        "surfaceScore": surface_score,
-        "scratchCount": scratch_count,
-        "scratchRisk": scratch_risk,
-        "reflectionRisk": reflection_risk,
+        "surfaceScore": 0,
+        "surfaceGrade": None,
+        "scratchCount": 0,
+        "scratchRisk": None,
+        "reflectionRisk": None,
         "scratchRegions": [],
         "scratchDetails": {
             "displayedRegions": 0,
@@ -2546,8 +2834,8 @@ def fallback_surface(content: bytes, media_type: str) -> dict[str, Any]:
             "exposure": None,
             "detectedDisc": False,
         },
-        "dustOrReflectionNote": "fallback 결과입니다. 실제 판매 전에는 밝은 환경에서 재촬영해 주세요.",
-        "playbackImpact": playback_impact(scratch_risk, reflection_risk),
+        "dustOrReflectionNote": "분석 불가 상태입니다. 실제 판매 전에는 밝은 환경에서 정면 사진을 다시 촬영해 주세요.",
+        "playbackImpact": None,
     }
 
 
@@ -2626,6 +2914,73 @@ async def analyze_jacket_condition(file: Annotated[UploadFile, File()]):
     }
 
 
+def audio_db_from_amplitude(value: float) -> float:
+    return float(20 * np.log10(max(float(value), 1e-12)))
+
+
+def audio_db_from_power(value: float) -> float:
+    return float(10 * np.log10(max(float(value), 1e-12)))
+
+
+def worst_risk(values: list[str | None]) -> str:
+    risks = {value for value in values if value}
+    if "high" in risks:
+        return "high"
+    if "medium" in risks:
+        return "medium"
+    return "low"
+
+
+def average_sample_metric(samples: list[dict[str, Any]], key: str) -> float | None:
+    values = [float(sample[key]) for sample in samples if sample.get(key) is not None]
+    return round(float(np.mean(values)), 2) if values else None
+
+
+def environment_score_from_audio(
+    ambient_noise_floor_db: float | None,
+    clipping_risk: str,
+    channel_imbalance_db: float | None,
+) -> int:
+    ambient_penalty = 18.0 if ambient_noise_floor_db is None else min(28.0, max(0.0, (ambient_noise_floor_db + 58) * 1.0))
+    clipping_penalty = 12.0 if clipping_risk == "high" else 4.0 if clipping_risk == "medium" else 0.0
+    imbalance_penalty = min(10.0, max(0.0, ((channel_imbalance_db or 0.0) - 3.0) * 1.8))
+    return int(max(38, min(98, round(98 - ambient_penalty - clipping_penalty - imbalance_penalty))))
+
+
+AUDIO_PROBLEM_FREQUENCY_RANGE_HZ = {"min": 4000, "max": 12000}
+MIN_AUDIO_ANALYSIS_SECONDS = 60
+AUDIO_CLICK_SCORE_MULTIPLIER = 300.0
+
+
+def audio_score_from_clicks(click_count: int, duration_seconds: float) -> int:
+    score = 100.0 - (AUDIO_CLICK_SCORE_MULTIPLIER * (float(click_count) / max(float(duration_seconds), 1.0)))
+    return int(max(0, min(100, round(score))))
+
+
+def summarize_spectral_issue_frames(issue_frames: np.ndarray, frame_seconds: float) -> tuple[int, float]:
+    max_gap_frames = max(1, int(round(0.12 / max(frame_seconds, 0.001))))
+    issue_count = 0
+    issue_frame_count = 0
+    inside_issue = False
+    gap_frames = 0
+
+    for flag in issue_frames.astype(bool):
+        if flag:
+            issue_frame_count += 1
+            if not inside_issue:
+                issue_count += 1
+                inside_issue = True
+            gap_frames = 0
+            continue
+        if inside_issue:
+            gap_frames += 1
+            if gap_frames > max_gap_frames:
+                inside_issue = False
+                gap_frames = 0
+
+    return issue_count, issue_frame_count * frame_seconds
+
+
 def analyze_audio_bytes(content: bytes, filename: str | None, label: str, ambient_noise_floor_db: float | None = None) -> dict[str, Any]:
     import librosa
 
@@ -2635,81 +2990,125 @@ def analyze_audio_bytes(content: bytes, filename: str | None, label: str, ambien
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(content)
             temp_path = temp_file.name
-        waveform, sr = librosa.load(temp_path, sr=22050, mono=False, duration=35)
-        mono = waveform.astype(np.float32) if waveform.ndim == 1 else np.mean(waveform, axis=0).astype(np.float32)
+        waveform, sr = librosa.load(temp_path, sr=44100, mono=False)
+        channel_rms_values: list[float] = []
+        if waveform.ndim == 1:
+            channel_rms_values.append(float(np.sqrt(np.mean(np.square(waveform)))))
+            mono = waveform.astype(np.float32)
+        else:
+            for channel in waveform:
+                channel_rms_values.append(float(np.sqrt(np.mean(np.square(channel)))))
+            mono = np.mean(waveform, axis=0).astype(np.float32)
         if mono.size < sr:
             raise ValueError("audio sample is too short")
         mono = mono - float(np.mean(mono))
         duration = float(mono.size / sr)
         peak = float(np.max(np.abs(mono)) + 1e-12)
+        rms = float(np.sqrt(np.mean(np.square(mono))) + 1e-12)
+        channel_imbalance_db = 0.0
+        if len(channel_rms_values) >= 2:
+            channel_imbalance_db = abs(audio_db_from_amplitude(channel_rms_values[0]) - audio_db_from_amplitude(channel_rms_values[1]))
         clipping_ratio = float(np.mean(np.abs(mono) >= 0.98))
         frame_rms = librosa.feature.rms(y=mono, frame_length=2048, hop_length=512)[0]
         frame_rms_db = librosa.amplitude_to_db(frame_rms + 1e-9, ref=1.0)
         noise_floor_db = float(np.percentile(frame_rms_db, 15))
         dynamic_range_db = float(np.percentile(frame_rms_db, 90) - np.percentile(frame_rms_db, 15))
         diff = np.abs(np.diff(mono))
+        local_rms = librosa.feature.rms(y=mono, frame_length=1024, hop_length=256)[0]
+        frame_positions = librosa.frames_to_samples(np.arange(local_rms.size), hop_length=256)
         median_diff = float(np.median(diff))
         mad_diff = float(np.median(np.abs(diff - median_diff)) + 1e-9)
-        transient_floor = median_diff + 10.0 * mad_diff
-        percentile_floor = float(np.percentile(diff, 99.82))
-        threshold = max(transient_floor, percentile_floor)
+        transient_floor = median_diff + 14.0 * mad_diff
+        percentile_floor = float(np.percentile(diff, 99.93))
+        threshold = max(transient_floor, percentile_floor, rms * 5.6)
         raw_clicks = np.flatnonzero(diff > threshold)
         separated: list[int] = []
-        min_gap = int(sr * 0.025)
+        min_gap = int(sr * 0.045)
         for index in raw_clicks:
+            local_rms_at_index = float(np.interp(index, frame_positions, local_rms)) if local_rms.size else rms
+            window = mono[max(0, int(index) - 18):min(mono.size, int(index) + 19)]
+            local_peak = float(np.max(np.abs(window))) if window.size else 0.0
+            if local_peak < max(0.065, local_rms_at_index * 3.7):
+                continue
             if not separated or int(index) - separated[-1] >= min_gap:
                 separated.append(int(index))
         click_count = len(separated)
         clicks_per_minute = click_count / max(duration, 1.0) * 60
         zcr = float(np.mean(librosa.feature.zero_crossing_rate(mono, frame_length=2048, hop_length=512)))
         flatness = float(np.mean(librosa.feature.spectral_flatness(y=mono)))
+        stft_hop = 1024
+        spectrum = np.abs(librosa.stft(mono, n_fft=4096, hop_length=stft_hop)) ** 2
+        freqs = librosa.fft_frequencies(sr=sr, n_fft=4096)
+        problem_max_hz = min(float(AUDIO_PROBLEM_FREQUENCY_RANGE_HZ["max"]), sr / 2)
+        problem_band = (freqs >= float(AUDIO_PROBLEM_FREQUENCY_RANGE_HZ["min"])) & (freqs <= problem_max_hz)
+        if not np.any(problem_band):
+            problem_band = freqs >= min(4000.0, sr / 2)
+        frame_power = np.sum(spectrum, axis=0) + 1e-12
+        problem_band_power = np.sum(spectrum[problem_band, :], axis=0) + 1e-12
+        problem_ratio_by_frame = problem_band_power / frame_power
+        total_power = float(np.sum(spectrum) + 1e-12)
+        high_frequency_noise = float(np.sum(problem_band_power) / total_power)
+        spectral_baseline = float(np.median(problem_ratio_by_frame))
+        spectral_mad = float(np.median(np.abs(problem_ratio_by_frame - spectral_baseline)) + 1e-9)
+        spectral_threshold = max(0.24, spectral_baseline + spectral_mad * 3.8)
+        problem_band_power_db = 10 * np.log10(problem_band_power)
+        issue_frames = (problem_ratio_by_frame >= spectral_threshold) & (problem_band_power_db >= np.percentile(problem_band_power_db, 70))
+        if label == "ambient":
+            issue_frames = np.zeros_like(issue_frames, dtype=bool)
+        spectral_issue_count, spectral_issue_duration_seconds = summarize_spectral_issue_frames(issue_frames, stft_hop / sr)
+        spectral_issue_rate = spectral_issue_count / max(duration, 1.0) * 60
+        spectral_issue_duration_ratio = spectral_issue_duration_seconds / max(duration, 1.0)
+        spectral_count_penalty = min(14.0, spectral_issue_rate * 0.45)
+        spectral_duration_penalty = min(4.0, spectral_issue_duration_ratio * 12)
+        spectral_penalty = spectral_count_penalty + spectral_duration_penalty
         adjusted_noise_floor_db = noise_floor_db
         if ambient_noise_floor_db is not None:
             # Convert dB floors to linear power and subtract the measured room/microphone baseline.
             sample_power = 10 ** (noise_floor_db / 10)
             ambient_power = 10 ** (ambient_noise_floor_db / 10)
-            adjusted_power = max(sample_power - ambient_power * 0.75, 1e-9)
+            adjusted_power = max(sample_power - ambient_power * 0.9, 1e-9)
             adjusted_noise_floor_db = float(10 * np.log10(adjusted_power))
         confidence = 88.0
-        if duration < 8:
-            confidence -= 22
-        elif duration < 15:
-            confidence -= 10
+        if duration < 6:
+            confidence -= 18
+        elif duration < 12:
+            confidence -= 8
         if ambient_noise_floor_db is None and label != "ambient":
-            confidence -= 16
-        if clipping_ratio >= 0.01:
-            confidence -= 12
+            confidence -= 10
+        if clipping_ratio >= 0.012:
+            confidence -= 8
+        if channel_imbalance_db >= 5:
+            confidence -= 4
 
-        score = 94.0
-        score -= min(24.0, clicks_per_minute * 0.95)
-        score -= min(18.0, max(0.0, adjusted_noise_floor_db + 48) * 0.75)
-        score -= min(12.0, clipping_ratio * 800)
-        score -= max(0.0, 12 - dynamic_range_db) * 0.55
-        score -= min(6.0, max(0.0, zcr - 0.18) * 30)
-        score -= min(6.0, max(0.0, flatness - 0.08) * 45)
-        if label == "noisy":
-            score -= 2
-        if label == "ambient":
-            score = 0
-        score = int(max(42, min(96, round(score))))
-        scratch_risk = "high" if clicks_per_minute >= 16 else "medium" if clicks_per_minute >= 6 else "low"
-        clipping_risk = "high" if clipping_ratio >= 0.01 else "medium" if clipping_ratio >= 0.002 else "low"
+        score = 0 if label == "ambient" else audio_score_from_clicks(click_count, duration)
+        clipping_risk = "high" if clipping_ratio >= 0.018 else "medium" if clipping_ratio >= 0.004 else "low"
         return {
             "filename": filename or "audio-sample",
-            "requestedSeconds": 30,
+            "requestedSeconds": 5 if label == "ambient" else MIN_AUDIO_ANALYSIS_SECONDS,
             "durationSeconds": round(duration, 1),
             "score": score,
-            "estimatedNoiseLevel": "high" if noise_floor_db > -34 else "medium" if noise_floor_db > -46 else "low",
-            "scratchRisk": scratch_risk,
-            "usableForListingSample": label == "good" and score >= 78 and clipping_risk != "high",
+            "estimatedNoiseLevel": None,
+            "scratchRisk": None,
+            "usableForListingSample": label == "good" and score >= 70,
             "clickCount": click_count,
             "clicksPerMinute": round(clicks_per_minute, 1),
             "noiseFloorDb": round(noise_floor_db, 1),
             "adjustedNoiseFloorDb": round(adjusted_noise_floor_db, 1),
             "dynamicRangeDb": round(dynamic_range_db, 1),
             "analysisConfidence": int(max(20, min(96, round(confidence)))),
-            "peakDb": round(20 * np.log10(peak), 1),
-            "clippingRisk": clipping_risk,
+            "peakDb": round(audio_db_from_amplitude(peak), 1),
+            "rmsDb": round(audio_db_from_amplitude(rms), 1),
+            "clippingRisk": None,
+            "clippingRatio": round(clipping_ratio, 4),
+            "channelImbalanceDb": round(channel_imbalance_db, 1),
+            "transientDensity": round(clicks_per_minute / 60, 3),
+            "highFrequencyNoise": round(high_frequency_noise, 3),
+            "spectralIssueCount": int(spectral_issue_count),
+            "spectralIssueDurationSeconds": round(float(spectral_issue_duration_seconds), 2),
+            "spectralIssueRate": round(float(spectral_issue_rate), 1),
+            "spectralIssueDurationRatio": round(float(spectral_issue_duration_ratio), 3),
+            "spectralPenalty": round(float(spectral_penalty), 1),
+            "problemFrequencyRangeHz": {"min": AUDIO_PROBLEM_FREQUENCY_RANGE_HZ["min"], "max": int(problem_max_hz)},
         }
     finally:
         if temp_path:
@@ -2730,6 +3129,7 @@ async def read_audio_upload(file: UploadFile | None, label: str, ambient_noise_f
 
 @router.post("/analysis/audio-samples")
 async def analyze_audio_samples(
+    audio_sample: Annotated[UploadFile | None, File()] = None,
     good_sample: Annotated[UploadFile | None, File()] = None,
     noisy_sample: Annotated[UploadFile | None, File()] = None,
     ambient_sample: Annotated[UploadFile | None, File()] = None,
@@ -2737,93 +3137,178 @@ async def analyze_audio_samples(
     try:
         ambient = await read_audio_upload(ambient_sample, "ambient")
         ambient_noise_floor = float(ambient["noiseFloorDb"]) if ambient and ambient.get("noiseFloorDb") is not None else None
-        good = await read_audio_upload(good_sample, "good", ambient_noise_floor)
-        noisy = await read_audio_upload(noisy_sample, "noisy", ambient_noise_floor)
+        audio = await read_audio_upload(audio_sample, "sample", ambient_noise_floor)
+        good = None if audio else await read_audio_upload(good_sample, "good", ambient_noise_floor)
+        noisy = None if audio else await read_audio_upload(noisy_sample, "noisy", ambient_noise_floor)
     except Exception as exc:
         logger.warning("audio analysis fallback: %s", exc)
-        seed = (getattr(good_sample, "size", 0) or 0) + (getattr(noisy_sample, "size", 0) or 0) + (getattr(ambient_sample, "size", 0) or 0)
-        score = int(max(58, min(84, 78 - (seed % 13))))
         return {
             "source": "fallback",
-            "audioScore": score,
-            "audioGrade": grade_from_score(score),
-            "playbackRisk": "medium" if score >= 70 else "high",
-            "clickCount": 0,
+            "analysisAvailable": False,
+            "analysisUnavailableReason": "오디오 파일을 직접 해석하지 못했습니다.",
+            "audioScore": None,
+            "audioGrade": None,
+            "lpConditionScore": None,
+            "lpConditionGrade": None,
+            "environmentScore": None,
+            "environmentGrade": None,
+            "playbackRisk": None,
+            "clickCount": None,
             "noiseFloorDb": None,
             "ambientNoiseFloorDb": None,
             "adjustedNoiseFloorDb": None,
             "dynamicRangeDb": None,
-            "analysisConfidence": 35,
-            "warnings": ["오디오 파일을 직접 해석하지 못해 보수적인 fallback 점수를 적용했습니다."],
+            "clippingRisk": None,
+            "channelImbalanceDb": None,
+            "highFrequencyNoise": None,
+            "spectralIssueCount": None,
+            "spectralIssueDurationSeconds": None,
+            "spectralIssueRate": None,
+            "spectralIssueDurationRatio": None,
+            "spectralPenalty": None,
+            "problemFrequencyRangeHz": None,
+            "analysisConfidence": 0,
+            "warnings": ["오디오 파일을 직접 해석하지 못해 분석 불가로 분리했습니다."],
+            "audioSample": None,
             "goodSample": None,
             "noisySample": None,
             "ambientSample": None,
-            "summary": "녹음 파일을 직접 해석하지 못해 보수적인 fallback 점수를 적용했습니다.",
+            "summary": "정밀 파형 해석이 불가능해 음질 점수와 등급을 표시하지 않습니다.",
         }
 
-    samples = [sample for sample in [good, noisy] if sample]
+    samples = [sample for sample in ([audio] if audio else [good, noisy]) if sample]
     if not samples:
         return {
             "source": "librosa",
-            "audioScore": 0,
-            "audioGrade": "미측정",
-            "playbackRisk": "high",
-            "clickCount": 0,
+            "analysisAvailable": False,
+            "analysisUnavailableReason": "음질 샘플 녹음이 없습니다.",
+            "audioScore": None,
+            "audioGrade": None,
+            "lpConditionScore": None,
+            "lpConditionGrade": None,
+            "environmentScore": None,
+            "environmentGrade": None,
+            "playbackRisk": None,
+            "clickCount": None,
             "noiseFloorDb": None,
             "ambientNoiseFloorDb": ambient_noise_floor,
             "adjustedNoiseFloorDb": None,
             "dynamicRangeDb": None,
+            "clippingRisk": None,
+            "channelImbalanceDb": None,
+            "highFrequencyNoise": None,
+            "spectralIssueCount": None,
+            "spectralIssueDurationSeconds": None,
+            "spectralIssueRate": None,
+            "spectralIssueDurationRatio": None,
+            "spectralPenalty": None,
+            "problemFrequencyRangeHz": None,
             "analysisConfidence": 0,
-            "warnings": ["좋은 구간 또는 안 좋은 구간 녹음이 필요합니다."],
+            "warnings": ["음질 샘플 녹음이 필요합니다."],
+            "audioSample": None,
             "goodSample": None,
             "noisySample": None,
             "ambientSample": ambient,
-            "summary": "좋은 구간 또는 안 좋은 구간 녹음이 필요합니다.",
+            "summary": "음질 샘플 녹음이 필요합니다.",
         }
-    if good and noisy:
-        score = int(round(good["score"] * 0.68 + noisy["score"] * 0.32))
-        if noisy["scratchRisk"] == "high":
-            score -= 6
-        elif noisy["scratchRisk"] == "medium":
-            score -= 3
-    else:
-        score = int(samples[0]["score"] - 4)
-    score = int(max(42, min(96, score)))
+
+    total_duration = float(sum(float(sample.get("durationSeconds") or 0.0) for sample in samples))
     click_count = int(sum(int(sample.get("clickCount", 0)) for sample in samples))
+    if total_duration < MIN_AUDIO_ANALYSIS_SECONDS:
+        noise_values = [float(sample["noiseFloorDb"]) for sample in samples if sample.get("noiseFloorDb") is not None]
+        dynamic_values = [float(sample["dynamicRangeDb"]) for sample in samples if sample.get("dynamicRangeDb") is not None]
+        return {
+            "source": "librosa",
+            "analysisAvailable": False,
+            "analysisUnavailableReason": f"음질 샘플은 최소 {MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.",
+            "audioScore": None,
+            "audioGrade": None,
+            "lpConditionScore": None,
+            "lpConditionGrade": None,
+            "environmentScore": None,
+            "environmentGrade": None,
+            "playbackRisk": None,
+            "clickCount": click_count,
+            "noiseFloorDb": round(float(np.mean(noise_values)), 1) if noise_values else None,
+            "ambientNoiseFloorDb": round(ambient_noise_floor, 1) if ambient_noise_floor is not None else None,
+            "adjustedNoiseFloorDb": None,
+            "dynamicRangeDb": round(float(np.mean(dynamic_values)), 1) if dynamic_values else None,
+            "clippingRisk": None,
+            "channelImbalanceDb": average_sample_metric(samples, "channelImbalanceDb"),
+            "highFrequencyNoise": average_sample_metric(samples, "highFrequencyNoise"),
+            "spectralIssueCount": int(sum(int(sample.get("spectralIssueCount") or 0) for sample in samples)),
+            "spectralIssueDurationSeconds": round(float(sum(float(sample.get("spectralIssueDurationSeconds") or 0.0) for sample in samples)), 2),
+            "spectralIssueRate": None,
+            "spectralIssueDurationRatio": None,
+            "spectralPenalty": average_sample_metric(samples, "spectralPenalty"),
+            "problemFrequencyRangeHz": AUDIO_PROBLEM_FREQUENCY_RANGE_HZ,
+            "analysisConfidence": 0,
+            "warnings": [f"음질 샘플이 {round(total_duration, 1)}초라서 최소 {MIN_AUDIO_ANALYSIS_SECONDS}초 기준을 충족하지 못했습니다."],
+            "audioSample": audio or samples[0],
+            "goodSample": good,
+            "noisySample": noisy,
+            "ambientSample": ambient,
+            "summary": f"음질 샘플은 최소 {MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.",
+        }
+    score = audio_score_from_clicks(click_count, total_duration)
     noise_values = [float(sample["noiseFloorDb"]) for sample in samples if sample.get("noiseFloorDb") is not None]
     adjusted_noise_values = [float(sample["adjustedNoiseFloorDb"]) for sample in samples if sample.get("adjustedNoiseFloorDb") is not None]
     dynamic_values = [float(sample["dynamicRangeDb"]) for sample in samples if sample.get("dynamicRangeDb") is not None]
     avg_noise = round(float(np.mean(noise_values)), 1) if noise_values else None
     avg_adjusted_noise = round(float(np.mean(adjusted_noise_values)), 1) if adjusted_noise_values else avg_noise
     avg_dynamic = round(float(np.mean(dynamic_values)), 1) if dynamic_values else None
+    channel_imbalance_db = average_sample_metric(samples, "channelImbalanceDb")
+    high_frequency_noise = average_sample_metric(samples, "highFrequencyNoise")
+    transient_density = average_sample_metric(samples, "transientDensity")
+    peak_db = average_sample_metric(samples, "peakDb")
+    rms_db = average_sample_metric(samples, "rmsDb")
+    spectral_issue_count = int(sum(int(sample.get("spectralIssueCount") or 0) for sample in samples))
+    spectral_issue_duration_seconds = round(float(sum(float(sample.get("spectralIssueDurationSeconds") or 0.0) for sample in samples)), 2)
+    spectral_total_duration = float(sum(float(sample.get("durationSeconds") or 0.0) for sample in samples))
+    spectral_issue_rate = round(spectral_issue_count / spectral_total_duration * 60, 1) if spectral_total_duration > 0 else None
+    spectral_issue_duration_ratio = round(spectral_issue_duration_seconds / spectral_total_duration, 3) if spectral_total_duration > 0 else None
+    spectral_penalty = average_sample_metric(samples, "spectralPenalty")
     warnings: list[str] = []
-    if ambient_noise_floor is None:
-        warnings.append("주변음 기준 샘플이 없어 노이즈 보정 신뢰도가 낮습니다.")
-    elif ambient_noise_floor > -36:
-        warnings.append("측정된 주변음이 큽니다. 조용한 환경에서 다시 측정하면 정확도가 올라갑니다.")
-        score -= 3
-    score = int(max(42, min(96, score)))
-    playback_risk = "high" if score < 70 or any(sample.get("scratchRisk") == "high" for sample in samples) else "medium" if score < 82 or any(sample.get("scratchRisk") == "medium" for sample in samples) else "low"
     confidence_values = [int(sample.get("analysisConfidence", 70)) for sample in samples]
     analysis_confidence = int(max(20, min(96, round(float(np.mean(confidence_values)) if confidence_values else 50))))
     if ambient_noise_floor is not None:
         analysis_confidence = min(96, analysis_confidence + 8)
+    if good and noisy:
+        analysis_confidence = min(96, analysis_confidence + 4)
     return {
         "source": "librosa",
+        "analysisAvailable": True,
         "audioScore": score,
         "audioGrade": grade_from_score(score),
-        "playbackRisk": playback_risk,
+        "lpConditionScore": score,
+        "lpConditionGrade": grade_from_score(score),
+        "environmentScore": None,
+        "environmentGrade": None,
+        "playbackRisk": None,
         "clickCount": click_count,
         "noiseFloorDb": avg_noise,
         "ambientNoiseFloorDb": round(ambient_noise_floor, 1) if ambient_noise_floor is not None else None,
         "adjustedNoiseFloorDb": avg_adjusted_noise,
         "dynamicRangeDb": avg_dynamic,
+        "clippingRisk": None,
+        "channelImbalanceDb": channel_imbalance_db,
+        "highFrequencyNoise": high_frequency_noise,
+        "transientDensity": transient_density,
+        "spectralIssueCount": spectral_issue_count,
+        "spectralIssueDurationSeconds": spectral_issue_duration_seconds,
+        "spectralIssueRate": spectral_issue_rate,
+        "spectralIssueDurationRatio": spectral_issue_duration_ratio,
+        "spectralPenalty": spectral_penalty,
+        "problemFrequencyRangeHz": AUDIO_PROBLEM_FREQUENCY_RANGE_HZ,
+        "peakDb": peak_db,
+        "rmsDb": rms_db,
         "analysisConfidence": analysis_confidence,
         "warnings": warnings,
+        "audioSample": audio or samples[0],
         "goodSample": good,
         "noisySample": noisy,
         "ambientSample": ambient,
-        "summary": f"클릭/팝 후보 {click_count}개, 노이즈 플로어 {avg_noise if avg_noise is not None else '-'} dB, 다이내믹 레인지 {avg_dynamic if avg_dynamic is not None else '-'} dB",
+        "summary": f"음질 {grade_from_score(score)} 등급, {score}점입니다. 감점은 뚝소리 후보 횟수와 녹음 시간만 반영했습니다.",
     }
 
 
@@ -2993,29 +3478,40 @@ def currency_to_krw(value: float, currency: str | None) -> int:
 DISCOGS_CONDITION_ORDER = [
     "Mint (M)",
     "Near Mint (NM or M-)",
+    "Excellent (EX)",
     "Very Good Plus (VG+)",
     "Very Good (VG)",
-    "Good Plus (G+)",
     "Good (G)",
-    "Fair (F)",
     "Poor (P)",
 ]
+
+DISCOGS_CONDITION_ALIASES = {
+    "Good Plus (G+)": "Good (G)",
+    "Fair (F)": "Poor (P)",
+}
+
+
+def app_condition(condition: Any) -> str:
+    return DISCOGS_CONDITION_ALIASES.get(str(condition), str(condition))
 
 
 def price_condition(surface_score: int | None, audio_score: int | None, scratch_risk: str | None, playback_risk: str | None) -> str:
     surface = int(surface_score or 0)
     audio = int(audio_score or 0)
-    worst_risk = "high" if "high" in {scratch_risk, playback_risk} else "medium" if "medium" in {scratch_risk, playback_risk} else "low"
     combined = int(round((surface or 72) * 0.45 + (audio or 72) * 0.55))
-    if combined >= 88 and worst_risk == "low":
+    if combined >= 96:
+        return "Mint (M)"
+    if combined >= 88:
         return "Near Mint (NM or M-)"
-    if combined >= 80 and worst_risk != "high":
+    if combined >= 80:
+        return "Excellent (EX)"
+    if combined >= 70:
         return "Very Good Plus (VG+)"
-    if combined >= 68:
+    if combined >= 58:
         return "Very Good (VG)"
-    if combined >= 55:
-        return "Good Plus (G+)"
-    return "Good (G)"
+    if combined >= 45:
+        return "Good (G)"
+    return "Poor (P)"
 
 
 def quality_multiplier(
@@ -3023,31 +3519,16 @@ def quality_multiplier(
     audio_score: int | None,
     scratch_risk: str | None,
     playback_risk: str | None,
-    jacket_score: int | None = None,
-    jacket_risk: str | None = None,
 ) -> float:
     surface = int(surface_score or 72)
     audio = int(audio_score or 72)
-    jacket = int(jacket_score or 76)
     multiplier = 1.0
     if surface >= 88 and audio >= 86:
         multiplier += 0.05
-    if surface < 70:
-        multiplier -= 0.08
-    if audio < 72:
-        multiplier -= 0.08
-    if scratch_risk == "high" or playback_risk == "high":
-        multiplier -= 0.12
-    elif scratch_risk == "medium" or playback_risk == "medium":
-        multiplier -= 0.05
-    if jacket >= 88:
-        multiplier += 0.03
-    elif jacket < 68:
-        multiplier -= 0.08
-    if jacket_risk == "high":
+    if surface < 58:
         multiplier -= 0.06
-    elif jacket_risk == "medium":
-        multiplier -= 0.03
+    if audio < 58:
+        multiplier -= 0.06
     return max(0.62, min(1.08, multiplier))
 
 
@@ -3088,10 +3569,15 @@ def suggestion_entry_to_krw(entry: Any) -> tuple[int | None, str]:
 
 def discogs_condition_prices(suggestions: dict[str, Any]) -> list[dict[str, Any]]:
     prices: list[dict[str, Any]] = []
+    collapsed: dict[str, Any] = {}
+    for condition, entry in suggestions.items():
+        app_key = app_condition(condition)
+        if app_key not in collapsed or app_key == condition:
+            collapsed[app_key] = entry
     for condition in DISCOGS_CONDITION_ORDER:
-        if condition not in suggestions:
+        if condition not in collapsed:
             continue
-        price, currency, original_price = suggestion_entry_details(suggestions.get(condition))
+        price, currency, original_price = suggestion_entry_details(collapsed.get(condition))
         if price:
             prices.append({
                 "condition": condition,
@@ -3099,7 +3585,7 @@ def discogs_condition_prices(suggestions: dict[str, Any]) -> list[dict[str, Any]
                 "currency": currency,
                 "originalPrice": original_price,
             })
-    for condition, entry in suggestions.items():
+    for condition, entry in collapsed.items():
         if condition in DISCOGS_CONDITION_ORDER:
             continue
         price, currency, original_price = suggestion_entry_details(entry)
@@ -3118,11 +3604,15 @@ def closest_condition_entry(suggestions: dict[str, Any], condition: str) -> tupl
         return suggestions.get(condition), condition
     if not suggestions:
         return None, condition
+    for source_condition, entry in suggestions.items():
+        if app_condition(source_condition) == condition:
+            return entry, condition
     target_index = DISCOGS_CONDITION_ORDER.index(condition) if condition in DISCOGS_CONDITION_ORDER else 3
-    available = [item for item in DISCOGS_CONDITION_ORDER if item in suggestions]
+    available = [item for item in DISCOGS_CONDITION_ORDER if any(app_condition(source) == item for source in suggestions)]
     if available:
         picked = min(available, key=lambda item: abs(DISCOGS_CONDITION_ORDER.index(item) - target_index))
-        return suggestions.get(picked), picked
+        source = next(source for source in suggestions if app_condition(source) == picked)
+        return suggestions.get(source), picked
     picked = next(iter(suggestions.keys()))
     return suggestions.get(picked), str(picked)
 
@@ -3135,10 +3625,8 @@ async def recommend_price(
     release_id: int | None = None,
     surface_score: int | None = None,
     audio_score: int | None = None,
-    jacket_score: int | None = None,
     scratch_risk: str | None = None,
     playback_risk: str | None = None,
-    jacket_risk: str | None = None,
 ):
     catalog = (catalog_number or "").strip()
     release_title = ""
@@ -3201,14 +3689,12 @@ async def recommend_price(
         base_price = int(match["price"] if match else 275000)
         source = "local"
 
-    adjusted_price = int(round(base_price * quality_multiplier(surface_score, audio_score, scratch_risk, playback_risk, jacket_score, jacket_risk) / 1000) * 1000)
+    adjusted_price = int(round(base_price * quality_multiplier(surface_score, audio_score, scratch_risk, playback_risk) / 1000) * 1000)
     adjusted_price = max(1000, adjusted_price)
     sales_history_available = bool(suggested_krw or condition_prices)
     confidence = 92 if sales_history_available else 78 if marketplace_low_krw else 54
     if surface_score and audio_score:
         confidence += 4
-    if jacket_score:
-        confidence += 2
     confidence = int(max(0, min(98, confidence)))
     release_url = f"https://www.discogs.com/release/{release_id}" if release_id else None
     return {
@@ -3236,9 +3722,9 @@ async def recommend_price(
             "conditionPrices": condition_prices,
         },
         "reason": (
-            f"Discogs 판매 이력 기반 가격표({condition_used})와 현재 최저가, 표면 {surface_score or '-'}점, 음질 {audio_score or '-'}점, 자켓 {jacket_score or '-'}점을 함께 반영했습니다."
+            f"Discogs 판매 이력 기반 가격표({condition_used})와 현재 최저가, 표면 {surface_score or '-'}점, 음질 {audio_score or '-'}점을 함께 반영했습니다."
             if sales_history_available
-            else f"Discogs 판매 이력 가격표는 확인하지 못했지만 현재 판매 최저가와 표면 {surface_score or '-'}점, 음질 {audio_score or '-'}점, 자켓 {jacket_score or '-'}점을 함께 반영했습니다."
+            else f"Discogs 판매 이력 가격표는 확인하지 못했지만 현재 판매 최저가와 표면 {surface_score or '-'}점, 음질 {audio_score or '-'}점을 함께 반영했습니다."
         )
         if source == "discogs"
         else "Discogs 가격 데이터를 가져오지 못해 로컬 시세와 상품 품질 점수를 기준으로 계산했습니다.",

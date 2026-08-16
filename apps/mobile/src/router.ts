@@ -9,6 +9,7 @@ const FindIdView = () => import('@/features/auth/views/FindIdView.vue');
 const ResetPasswordView = () => import('@/features/auth/views/ResetPasswordView.vue');
 const PreferenceView = () => import('@/features/auth/views/PreferenceView.vue');
 const HomeView = () => import('@/features/buyer/views/HomeView.vue');
+const FrequencyAnalyzerView = () => import('@/features/audio/views/FrequencyAnalyzerView.vue');
 const SearchView = () => import('@/features/buyer/views/SearchView.vue');
 const PressingListingsView = () => import('@/features/buyer/views/PressingListingsView.vue');
 const AlbumDetailView = () => import('@/features/buyer/views/AlbumDetailView.vue');
@@ -24,6 +25,7 @@ const CollectionDetailView = () => import('@/features/collection/views/Collectio
 const CollectionOfferView = () => import('@/features/collection/views/CollectionOfferView.vue');
 const ChatView = () => import('@/features/transaction/views/ChatView.vue');
 const PriceOfferView = () => import('@/features/buyer/views/PriceOfferView.vue');
+const BuyOrderView = () => import('@/features/buyer/views/BuyOrderView.vue');
 const OffersView = () => import('@/features/seller/views/OffersView.vue');
 const OngoingTransactionView = () => import('@/features/transaction/views/OngoingTransactionView.vue');
 const TransactionLocationView = () => import('@/features/transaction/views/TransactionLocationView.vue');
@@ -42,6 +44,7 @@ export const router = createRouter({
     { path: '/auth/find-id', component: FindIdView },
     { path: '/auth/reset-password', component: ResetPasswordView },
     { path: '/auth/preference', component: PreferenceView },
+    { path: '/frequency', component: FrequencyAnalyzerView },
     {
       path: '/app',
       component: MainLayout,
@@ -52,29 +55,37 @@ export const router = createRouter({
         { path: 'pressing', component: PressingListingsView },
         { path: 'album/:id', component: AlbumDetailView },
         { path: 'favorites', component: FavoritesView },
+        { path: 'sell', component: SellView },
+        { path: 'sell/:id/edit', component: SellView },
         { path: 'collection', component: CollectionLibraryView },
+        { path: 'collection/new', component: CollectionCreateView },
+        { path: 'collection/:id/edit', component: CollectionCreateView },
+        { path: 'collection/:id/offer', component: CollectionOfferView },
+        { path: 'collection/:id', component: CollectionDetailView },
         { path: 'notifications', component: NotificationsView },
         { path: 'profile', component: ProfileView },
         { path: 'profile/:userId', component: ProfileView },
         { path: 'settings', component: SettingsView },
       ],
     },
-    { path: '/sell', component: SellView },
-    { path: '/sell/:id/edit', component: SellView },
+    { path: '/sell', redirect: to => ({ path: '/app/sell', query: to.query }) },
+    { path: '/sell/:id/edit', redirect: to => ({ path: `/app/sell/${String(to.params.id)}/edit`, query: to.query }) },
     { path: '/sell/camera', component: CameraView },
     { path: '/sell/analysis', component: AnalysisRequestView },
     { path: '/sell/analysis/result', component: AnalysisResultView },
     { path: '/sell/report', component: SellReportView },
-    { path: '/collection/new', component: CollectionCreateView },
-    { path: '/collection/:id/edit', component: CollectionCreateView },
-    { path: '/collection/:id', component: CollectionDetailView },
-    { path: '/collection/:id/offer', component: CollectionOfferView },
+    { path: '/collection/new', redirect: to => ({ path: '/app/collection/new', query: to.query }) },
+    { path: '/collection/:id/edit', redirect: to => ({ path: `/app/collection/${String(to.params.id)}/edit`, query: to.query }) },
+    { path: '/collection/:id/offer', redirect: to => ({ path: `/app/collection/${String(to.params.id)}/offer`, query: to.query }) },
+    { path: '/collection/:id', redirect: to => ({ path: `/app/collection/${String(to.params.id)}`, query: to.query }) },
     { path: '/transaction/chat/:chatId', component: ChatView },
     { path: '/transaction/offer/:albumId', component: PriceOfferView },
+    { path: '/market/buy-order/:listingId', component: BuyOrderView },
     { path: '/transaction/offers/received', component: OffersView },
     { path: '/transaction/ongoing/:transactionId', component: OngoingTransactionView },
     { path: '/transaction/location/:transactionId', component: TransactionLocationView },
     { path: '/transaction/cancel/:transactionId', component: CancelTransactionView },
     { path: '/transaction/review/:transactionId', component: ReviewView },
+    { path: '/:pathMatch(.*)*', redirect: '/app' },
   ],
 });

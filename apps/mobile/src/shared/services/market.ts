@@ -1,4 +1,4 @@
-import type { Album, MarketAdviceResponse, MarketPriceEstimate, WishlistItem } from '@/shared/models/market';
+import type { Album, BuyOrder, MarketAdviceResponse, MarketPriceEstimate, WishlistItem } from '@/shared/models/market';
 import { fetchApi } from '@/shared/services/api';
 
 type JsonRecord = Record<string, unknown>;
@@ -69,6 +69,33 @@ export async function fetchMarketPriceEstimate(params: MarketEstimateParams) {
   });
   const response = await fetchApi(`/market/price-estimate?${query.toString()}`);
   return normalizeMarketEstimate(await readJson<JsonRecord>(response));
+}
+
+export interface BuyOrderCreatePayload {
+  buyer_id: string;
+  listing_id?: string;
+  market_key?: string;
+  max_price: number;
+  min_media_grade?: string;
+  min_sleeve_grade?: string;
+  pressing_condition?: string;
+  is_first_press_only?: boolean;
+  region_preference?: string;
+  status?: string;
+}
+
+export async function createBuyOrder(payload: BuyOrderCreatePayload) {
+  const response = await fetchApi('/market/buy-orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJson<{ status: string; buyOrder: BuyOrder; matches: BuyOrder[]; listing?: Album }>(response);
+}
+
+export async function fetchBuyOrderMatches(listingId: string) {
+  const response = await fetchApi(`/market/buy-orders/matches?listing_id=${encodeURIComponent(listingId)}`);
+  return readJson<{ listingId: string; marketKey: string; matches: BuyOrder[]; instantSalePrice: number }>(response);
 }
 
 export async function fetchMarketAdvice(listingId: string): Promise<MarketAdviceResponse> {
@@ -161,11 +188,11 @@ export interface InstantSellResult {
   };
 }
 
-export async function instantSellListing(listingId: string, sellerId: string) {
+export async function instantSellListing(listingId: string, sellerId: string, buyOrderId?: string) {
   const response = await fetchApi(`/market/listings/${encodeURIComponent(listingId)}/instant-sell`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ seller_id: sellerId }),
+    body: JSON.stringify({ seller_id: sellerId, buy_order_id: buyOrderId }),
   });
   return readJson<InstantSellResult>(response);
 }
