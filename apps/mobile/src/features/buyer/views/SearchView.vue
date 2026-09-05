@@ -111,8 +111,8 @@
             <div class="min-w-0 flex-1">
               <div class="flex items-start justify-between gap-3">
                 <div class="min-w-0 flex-1">
-                  <p class="truncate text-sm font-medium text-gray-600 dark:text-slate-300">{{ group.artist || '아티스트 미상' }}</p>
-                  <h2 class="mt-1 truncate text-base font-semibold text-gray-950 dark:text-slate-100">{{ group.title }}</h2>
+                  <h2 class="truncate text-base font-semibold text-gray-950 dark:text-slate-100">{{ group.title }}</h2>
+                  <p class="mt-1 truncate text-sm font-medium text-gray-600 dark:text-slate-300">{{ group.artist || '아티스트 미상' }}</p>
                 </div>
                 <span class="shrink-0 rounded-md bg-emerald-600 px-2.5 py-1 text-sm font-bold text-white shadow-sm">{{ group.bestQualityLabel || '-' }}</span>
               </div>
@@ -305,29 +305,19 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.search-select,
-.filter-field {
+.search-select {
   display: grid;
   gap: 0.35rem;
   min-width: 0;
 }
 
-.filter-section-title {
-  color: #111827;
-  font-size: 0.9rem;
-  font-weight: 750;
-}
-
-.search-select span,
-.filter-field span {
+.search-select span {
   color: #4b5563;
   font-size: 0.72rem;
   font-weight: 700;
 }
 
-.search-select select,
-.filter-field select,
-.filter-field input {
+.search-select select {
   min-width: 0;
   width: 100%;
   height: 2.5rem;
@@ -340,297 +330,18 @@ onMounted(() => {
   outline: none;
 }
 
-.search-select select:focus,
-.filter-field select:focus,
-.filter-field input:focus {
+.search-select select:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
 }
 
-.genre-chip-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.genre-chip {
-  border: 1px solid #e2d4bf;
-  border-radius: 999px;
-  background: #fffdf7;
-  padding: 0.45rem 0.75rem;
-  color: #374151;
-  font-size: 0.8rem;
-  font-weight: 650;
-}
-
-.genre-chip.is-active {
-  border-color: #2563eb;
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
-.genre-expand-button {
-  width: 100%;
-  border: 1px dashed #bfdbfe;
-  border-radius: 0.5rem;
-  background: #eff6ff;
-  padding: 0.55rem 0.75rem;
-  color: #2563eb;
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.filter-range {
-  display: grid;
-  gap: 0.45rem;
-  border: 1px solid #eadfcd;
-  border-radius: 0.65rem;
-  background: #fffdf7;
-  padding: 0.75rem;
-}
-
-.range-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.grade-help-button {
-  display: inline-flex;
-  width: 1.75rem;
-  height: 1.75rem;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: #2563eb;
-}
-
-.grade-help-panel {
-  display: grid;
-  gap: 0.35rem;
-  border: 1px solid #e2d4bf;
-  border-radius: 0.5rem;
-  background: #fff8ed;
-  padding: 0.55rem;
-}
-
-.grade-help-row {
-  display: grid;
-  grid-template-columns: 2.25rem minmax(0, 1fr);
-  gap: 0.45rem;
-  align-items: start;
-  margin: 0;
-}
-
-.grade-help-row b {
-  color: #111827;
-  font-size: 0.72rem;
-  line-height: 1.35;
-}
-
-.filter-range span {
-  color: #4b5563;
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
-.filter-range strong {
-  color: #111827;
-  font-size: 0.92rem;
-}
-
-.filter-range em {
-  color: #6b7280;
-  font-size: 0.7rem;
-  font-style: normal;
-  font-weight: 600;
-}
-
-.range-boundary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.range-boundary span {
-  min-width: 0;
-  color: #374151;
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-
-.range-boundary span:last-child {
-  text-align: right;
-}
-
-.filter-range input {
-  width: 100%;
-  accent-color: #2563eb;
-}
-
-.filter-location-part {
-  display: grid;
-  min-width: 0;
-  gap: 0.35rem;
-  min-height: 4.15rem;
-  align-content: center;
-  border: 1px solid #e2d4bf;
-  border-radius: 0.5rem;
-  background: #fffaf0;
-  padding: 0.6rem;
-}
-
-.filter-location-part span {
-  color: #4b5563;
-  font-size: 0.68rem;
-  font-weight: 700;
-}
-
-.filter-location-part strong {
-  min-width: 0;
-  color: #111827;
-  font-size: 0.8rem;
-  font-weight: 750;
-  line-height: 1.25;
-  overflow-wrap: anywhere;
-}
-
-.location-scope-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(5.5rem, 1fr));
-  gap: 0.5rem;
-}
-
-.location-scope-button {
-  min-width: 0;
-  min-height: 2.75rem;
-  border: 1px solid #e2d4bf;
-  border-radius: 0.5rem;
-  background: #fffaf0;
-  padding: 0.55rem 0.35rem;
-  color: #374151;
-  font-size: 0.76rem;
-  font-weight: 750;
-  line-height: 1.2;
-}
-
-.location-scope-button.is-active {
-  border-color: #2563eb;
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.location-scope-placeholder {
-  margin-top: 0.75rem;
-  border: 1px dashed #e2d4bf;
-  border-radius: 0.5rem;
-  background: #fffaf0;
-  padding: 0.75rem;
-  color: #4b5563;
-  font-size: 0.78rem;
-  font-weight: 650;
-}
-
-:global(.dark) .search-select span,
-:global(.dark) .filter-field span {
+:global(.dark) .search-select span {
   color: #cbd5e1;
 }
 
-:global(.dark) .filter-section-title {
-  color: #f8fafc;
-}
-
-:global(.dark) .search-select select,
-:global(.dark) .filter-field select,
-:global(.dark) .filter-field input {
+:global(.dark) .search-select select {
   border-color: #684831;
   background: #3a271b;
   color: #f8fafc;
-}
-
-:global(.dark) .genre-chip {
-  border-color: #684831;
-  background: #3a271b;
-  color: #f8fafc;
-}
-
-:global(.dark) .grade-help-button {
-  border-color: #2563eb;
-  background: #172554;
-  color: #bfdbfe;
-}
-
-:global(.dark) .grade-help-panel {
-  border-color: #684831;
-  background: #342217;
-}
-
-:global(.dark) .grade-help-row b {
-  color: #f8fafc;
-}
-
-:global(.dark) .filter-location-part {
-  border-color: #684831;
-  background: #3a271b;
-}
-
-:global(.dark) .filter-location-part span {
-  color: #cbd5e1;
-}
-
-:global(.dark) .filter-location-part strong {
-  color: #f8fafc;
-}
-
-:global(.dark) .location-scope-button {
-  border-color: #684831;
-  background: #3a271b;
-  color: #e2e8f0;
-}
-
-:global(.dark) .location-scope-button.is-active {
-  border-color: #93c5fd;
-  background: #1e3a5f;
-  color: #eff6ff;
-}
-
-:global(.dark) .location-scope-placeholder {
-  border-color: #684831;
-  background: #342217;
-  color: #cbd5e1;
-}
-
-:global(.dark) .genre-chip.is-active {
-  border-color: #60a5fa;
-  background: #1e3a5f;
-  color: #bfdbfe;
-}
-
-:global(.dark) .genre-expand-button {
-  border-color: #2563eb;
-  background: #172554;
-  color: #bfdbfe;
-}
-
-:global(.dark) .filter-range {
-  border-color: #684831;
-  background: #3a271b;
-}
-
-:global(.dark) .filter-range span {
-  color: #cbd5e1;
-}
-
-:global(.dark) .filter-range strong {
-  color: #f8fafc;
-}
-
-:global(.dark) .filter-range em {
-  color: #cbd5e1;
 }
 </style>

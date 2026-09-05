@@ -11,8 +11,8 @@
       <div class="min-w-0 flex-1">
         <div class="mb-3 flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-medium text-gray-600">{{ album.artist || '아티스트 미상' }}</p>
-            <h3 class="mt-1 truncate font-semibold text-gray-950">{{ album.title }}</h3>
+            <h3 class="truncate font-semibold text-gray-950">{{ album.title }}</h3>
+            <p class="mt-1 truncate text-sm font-medium text-gray-600">{{ album.artist || '아티스트 미상' }}</p>
           </div>
           <span class="shrink-0 rounded-md bg-emerald-600 px-2.5 py-1 text-sm font-bold text-white shadow-sm">
             {{ album.audioGrade || '-' }}

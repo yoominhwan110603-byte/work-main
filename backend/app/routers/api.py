@@ -9,7 +9,7 @@ import smtplib
 import tempfile
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
-from typing import Annotated, Any
+from typing import Annotated, Any, Callable
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -2325,8 +2325,9 @@ async def delete_wishlist_item(wishlist_id: str, user_id: Annotated[str, Depends
     return {"status": "ok", "wishlistItem": compact_wishlist_item(updated)}
 
 
-def collection_owner(user_id: str) -> dict[str, Any]:
-    user = read_json(USERS_PATH, {}).get(user_id, {})
+def collection_owner(user_id: str, users: dict[str, Any] | None = None) -> dict[str, Any]:
+    resolved_users = users if users is not None else read_json(USERS_PATH, {})
+    user = resolved_users.get(user_id, {})
     return {
         "id": user_id,
         "name": str(user.get("username") or "사용자"),
@@ -2335,11 +2336,11 @@ def collection_owner(user_id: str) -> dict[str, Any]:
     }
 
 
-def normalize_collection(item: dict[str, Any]) -> dict[str, Any]:
+def normalize_collection(item: dict[str, Any], users: dict[str, Any] | None = None) -> dict[str, Any]:
     owner_id = str(item.get("ownerId") or item.get("owner_id") or "")
     normalized = dict(item)
     normalized["id"] = str(item.get("id") or f"collection-{uuid4().hex[:10]}")
-    normalized["owner"] = item.get("owner") or collection_owner(owner_id)
+    normalized["owner"] = item.get("owner") or collection_owner(owner_id, users)
     normalized["ownerId"] = owner_id
     normalized["ownershipStatus"] = "owned"
     normalized["visibility"] = "private" if item.get("visibility") == "private" else "public"
@@ -2462,18 +2463,26 @@ def offer_album_for_listing(listing_id: str) -> dict[str, Any] | None:
     return listing_to_album(listing) if listing else None
 
 
-def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_offer(
+    payload: dict[str, Any],
+    *,
+    album_resolver: Callable[[str, str], tuple[dict[str, Any] | None, bool]] | None = None,
+) -> dict[str, Any]:
     collection_id = str(payload.get("collectionId") or payload.get("collection_id") or "")
     listing_id = str(payload.get("listingId") or payload.get("listing_id") or collection_id)
-    collection = find_collection(collection_id) if collection_id else None
-    album = collection_to_album(collection) if collection else offer_album_for_listing(listing_id)
+    if album_resolver is None:
+        collection = find_collection(collection_id) if collection_id else None
+        album = collection_to_album(collection) if collection else offer_album_for_listing(listing_id)
+        is_collection = collection is not None
+    else:
+        album, is_collection = album_resolver(listing_id, collection_id)
     buyer_id = str(payload.get("buyerId") or payload.get("buyer_id") or "guest")
     seller_id = str(payload.get("sellerId") or payload.get("seller_id") or "")
     return {
         "id": str(payload.get("id") or f"offer-{uuid4().hex[:10]}"),
         "listingId": listing_id,
         "collectionId": collection_id or None,
-        "offerType": "collection" if collection else "listing",
+        "offerType": "collection" if is_collection else "listing",
         "album": album,
         "buyerId": buyer_id,
         "buyerName": str(payload.get("buyerName") or payload.get("buyer_name") or "게스트"),
@@ -2484,6 +2493,63 @@ def normalize_offer(payload: dict[str, Any]) -> dict[str, Any]:
         "status": str(payload.get("status") or "pending"),
         "chatId": str(payload.get("chatId") or payload.get("chat_id") or make_one_to_one_chat_id(listing_id, buyer_id, seller_id)),
     }
+
+
+def normalize_offers(
+    payloads: list[dict[str, Any]],
+    *,
+    listings: list[dict[str, Any]] | None = None,
+    users: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    # Cache only within this request so status and profile changes stay visible.
+    albums: dict[tuple[str, str], tuple[dict[str, Any] | None, bool]] = {}
+    listing_index: dict[str, dict[str, Any]] | None = None
+    collection_index: dict[str, dict[str, Any]] | None = None
+    wishlist_items: list[dict[str, Any]] | None = None
+
+    def resolve_album(listing_id: str, collection_id: str) -> tuple[dict[str, Any] | None, bool]:
+        nonlocal listing_index, collection_index, wishlist_items, users
+        key = (listing_id, collection_id)
+        if key in albums:
+            return albums[key]
+        collection = None
+        if collection_id:
+            if collection_index is None:
+                collection_index = {str(item.get("id")): item for item in reversed(read_list(COLLECTIONS_PATH))}
+            collection = collection_index.get(collection_id)
+        if collection is not None:
+            if users is None:
+                users = read_json(USERS_PATH, {})
+            result = (collection_to_album(normalize_collection(collection, users)), True)
+        else:
+            if listing_index is None:
+                source = listings if listings is not None else read_list(LISTINGS_PATH)
+                listing_index = {str(item.get("id")): item for item in reversed([*source, *MOCK_LISTINGS])}
+            listing = listing_index.get(listing_id)
+            if listing is None:
+                result = (None, False)
+            else:
+                if users is None:
+                    users = read_json(USERS_PATH, {})
+                if wishlist_items is None:
+                    wishlist_items = read_list(WISHLIST_PATH)
+                result = (listing_to_album(listing, users, wishlist_items), False)
+        albums[key] = result
+        return result
+
+    return [normalize_offer(payload, album_resolver=resolve_album) for payload in payloads]
+
+
+def received_offer_items(user_id: str, listing_id: str | None = None) -> list[dict[str, Any]]:
+    return [
+        item for item in read_list(OFFERS_PATH)
+        if str(item.get("sellerId") or item.get("seller_id") or "") == user_id
+        and str(item.get("buyerId") or item.get("buyer_id") or "guest") != user_id
+        and (listing_id is None or str(
+            item.get("listingId") or item.get("listing_id")
+            or item.get("collectionId") or item.get("collection_id") or ""
+        ) == listing_id)
+    ]
 
 
 @router.post("/collection-offers")
@@ -2577,13 +2643,8 @@ async def create_offer(payload: OfferCreate):
 
 @router.get("/users/{user_id}/offers/received")
 async def get_received_offers(user_id: str, listing_id: str | None = None):
-    offers = [
-        normalize_offer(item)
-        for item in read_list(OFFERS_PATH)
-        if str(item.get("sellerId") or item.get("seller_id") or "") == user_id
-        and (listing_id is None or str(item.get("listingId") or item.get("listing_id") or item.get("collectionId") or item.get("collection_id") or "") == listing_id)
-    ]
-    return {"offers": [offer for offer in offers if offer["sellerId"] == user_id and offer["buyerId"] != user_id and offer["album"] is not None]}
+    offers = normalize_offers(received_offer_items(user_id, listing_id))
+    return {"offers": [offer for offer in offers if offer["album"] is not None]}
 
 
 @router.patch("/offers/{offer_id}")
@@ -2735,23 +2796,22 @@ def collect_user_notifications(user_id: str, *, limit: int = 50) -> list[dict[st
         for item in read_list(NOTIFICATIONS_PATH)
         if str(item.get("userId") or item.get("user_id") or "") == user_id
     ]
-    raw_offers = read_json(OFFERS_PATH, [])
-    offer_items = raw_offers[:MAX_DYNAMIC_NOTIFICATION_SCAN] if isinstance(raw_offers, list) else []
-    for offer in [normalize_offer(item) for item in offer_items]:
-        if offer["sellerId"] == user_id and offer["buyerId"] != user_id:
-            notifications.append({
-                "id": f"offer-{offer['id']}",
-                "type": "offer",
-                "title": "새 가격 제안",
-                "message": f"{offer['buyerName']}님이 {offer['album']['title'] if offer['album'] else '판매글'}에 {offer['offerPrice']:,}원을 제안했습니다.",
-                "timestamp": offer["timestamp"],
-                "isRead": False,
-                "listingId": offer["listingId"],
-                "link": f"/transaction/offers/received?listingId={quote(offer['listingId'], safe='')}",
-            })
-    buy_orders = read_list(BUY_ORDERS_PATH)
     users = read_json(USERS_PATH, {})
-    for listing in read_list(LISTINGS_PATH):
+    listings = read_list(LISTINGS_PATH)
+    offer_items = received_offer_items(user_id)[:MAX_DYNAMIC_NOTIFICATION_SCAN]
+    for offer in normalize_offers(offer_items, listings=listings, users=users):
+        notifications.append({
+            "id": f"offer-{offer['id']}",
+            "type": "offer",
+            "title": "새 가격 제안",
+            "message": f"{offer['buyerName']}님이 {offer['album']['title'] if offer['album'] else '판매글'}에 {offer['offerPrice']:,}원을 제안했습니다.",
+            "timestamp": offer["timestamp"],
+            "isRead": False,
+            "listingId": offer["listingId"],
+            "link": f"/transaction/offers/received?listingId={quote(offer['listingId'], safe='')}",
+        })
+    buy_orders = read_list(BUY_ORDERS_PATH)
+    for listing in listings:
         if str(listing.get("seller_id") or listing.get("user_id") or "") != user_id:
             continue
         if str(listing.get("status") or "published") in UNAVAILABLE_LISTING_STATUSES:
