@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white text-gray-900 flex flex-col">
     <header class="px-4 py-4 flex items-center border-b">
-      <button class="p-2" :disabled="isAnalyzing" @click="router.back()">
+      <button class="p-2" :disabled="isAnalyzing" @click="goBack(router)">
         <ArrowLeft :size="24" />
       </button>
       <h1 class="ml-3 text-lg">감정서 만들기</h1>
@@ -150,6 +150,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowLeft, Camera, ImagePlus, ScanLine, Video } from 'lucide-vue-next';
+import { goBack } from '@/shared/services/navigation';
 import {
   analyzeLpMedia,
   recognizeLpImage,

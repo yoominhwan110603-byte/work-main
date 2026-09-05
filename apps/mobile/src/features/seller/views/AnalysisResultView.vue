@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white text-gray-900 flex flex-col">
     <header class="px-4 py-4 flex items-center border-b">
-      <button class="p-2" @click="router.back()"><ArrowLeft :size="24" /></button>
+      <button class="p-2" @click="goBack(router)"><ArrowLeft :size="24" /></button>
       <h1 class="ml-3 text-lg">LP 감정 결과</h1>
     </header>
 
@@ -97,6 +97,7 @@ import { useRouter } from 'vue-router';
 import { ArrowLeft, BadgeCheck } from 'lucide-vue-next';
 import { readCoverAnalysisReport, recognizeLpImage } from '@/features/seller/services/analysis';
 import { useAppStore } from '@/shared/stores/appStore';
+import { goBack } from '@/shared/services/navigation';
 
 const router = useRouter();
 const store = useAppStore();
@@ -189,6 +190,7 @@ const applyToSellForm = () => {
       ...((draft.images as string[] | undefined) || []).slice(2),
     ].filter(Boolean).slice(0, 5),
     recordVideoDataUrl: report.recordVideoDataUrl || draft.recordVideoDataUrl,
+    recordRecognition: recognition.value,
     formData: {
       ...draftForm,
       title: report.selectedCandidate.title,

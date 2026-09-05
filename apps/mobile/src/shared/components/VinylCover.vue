@@ -1,5 +1,5 @@
 <template>
-  <img v-if="src" :src="src" :alt="alt" :class="props.class" />
+  <img v-if="resolvedSrc" :src="resolvedSrc" :alt="alt" :class="props.class" />
   <div
     v-else
     role="img"
@@ -17,10 +17,13 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue';
 import { Disc3 } from 'lucide-vue-next';
+import { resolveUploadedImageUrl } from '@/shared/services/mediaUpload';
 
 const props = withDefaults(defineProps<{ src?: string; alt?: string; class?: string }>(), {
   alt: 'LP image',
   class: '',
 });
+const resolvedSrc = computed(() => resolveUploadedImageUrl(props.src));
 </script>

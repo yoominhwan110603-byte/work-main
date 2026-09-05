@@ -1,43 +1,27 @@
 <template>
   <div class="size-full bg-white flex flex-col">
     <header class="px-4 py-4 flex items-center border-b">
-      <button class="p-2" @click="router.back()"><ArrowLeft :size="24" /></button>
-      <h1 class="ml-4 text-lg">채팅 요청</h1>
+      <button class="p-2" @click="goBack(router)"><ArrowLeft :size="24" /></button>
+      <div class="ml-4 min-w-0">
+        <h1 class="text-lg">받은 가격 제안</h1>
+        <p v-if="listingTitle" class="truncate text-sm text-gray-500">{{ listingTitle }}</p>
+      </div>
+      <button
+        class="ml-auto p-2 text-gray-600 disabled:text-gray-300"
+        type="button"
+        title="새로고침"
+        aria-label="새로고침"
+        :disabled="isLoading"
+        @click="loadOffers"
+      >
+        <RefreshCw :size="20" :class="{ 'animate-spin': isLoading }" />
+      </button>
     </header>
 
     <div class="flex-1 overflow-y-auto bg-gray-50">
-      <section class="bg-white border-b">
-        <div class="px-4 pt-4 pb-2 flex items-center justify-between">
-          <h2 class="font-medium">사용자별 채팅 요청</h2>
-          <button class="text-sm text-blue-600" @click="loadAll">새로고침</button>
-        </div>
-        <div v-if="isLoading" class="p-6 text-center text-sm text-gray-500">채팅 요청을 불러오는 중입니다.</div>
-        <div v-else-if="chatRequests.length === 0" class="p-6 text-center text-sm text-gray-500">받은 채팅 요청이 없습니다.</div>
-        <button
-          v-for="request in chatRequests"
-          :key="request.chatId"
-          class="w-full p-4 border-t flex gap-3 text-left active:bg-gray-50"
-          @click="openChat(request)"
-        >
-          <VinylCover :src="request.album?.images?.[0]" :alt="request.album?.title || 'LP'" class="w-14 h-14 object-cover rounded-lg bg-gray-100" />
-          <div class="flex-1 min-w-0">
-            <div class="flex items-center gap-2">
-              <p class="text-sm font-medium truncate">{{ request.participantName }}</p>
-              <span v-if="request.isUnread" class="w-2 h-2 rounded-full bg-blue-600 shrink-0"></span>
-            </div>
-            <p class="text-sm text-gray-600 truncate">{{ request.album?.title || request.listingId }}</p>
-            <p class="text-sm text-gray-500 truncate mt-1">{{ request.lastMessage }}</p>
-          </div>
-          <span class="text-xs text-gray-400 whitespace-nowrap">{{ formatTime(request.timestamp) }}</span>
-        </button>
-      </section>
-
-      <section class="mt-3 bg-white">
-        <div class="px-4 pt-4 pb-2">
-          <h2 class="font-medium">받은 가격 제안</h2>
-        </div>
+      <section class="bg-white">
         <div v-if="isLoading" class="p-6 text-center text-sm text-gray-500">가격 제안을 불러오는 중입니다.</div>
-        <div v-else-if="offers.length === 0" class="p-6 text-center text-sm text-gray-500">받은 가격 제안이 없습니다.</div>
+        <div v-else-if="offers.length === 0" class="p-6 text-center text-sm text-gray-500">{{ listingId ? '이 상품에 받은 가격 제안이 없습니다.' : '받은 가격 제안이 없습니다.' }}</div>
         <article v-for="offer in offers" :key="offer.id" class="p-4 border-t">
           <div class="flex gap-3 mb-3">
             <VinylCover :src="offer.album.images[0]" :alt="offer.album.title" class="w-16 h-16 object-cover rounded-lg" />
@@ -67,10 +51,11 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { ArrowLeft } from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
+import { ArrowLeft, RefreshCw } from 'lucide-vue-next';
 import type { Album } from '@/shared/models/market';
+import { goBack } from '@/shared/services/navigation';
 import { fetchApi } from '@/shared/services/api';
 import { useAppStore } from '@/shared/stores/appStore';
 import { saveActiveTrade } from '@/features/transaction/services/tradeState';
@@ -90,58 +75,34 @@ interface ReceivedOffer {
   status: 'pending' | 'accepted' | 'rejected';
 }
 
-interface ChatRequest {
-  id: string;
-  chatId: string;
-  listingId: string;
-  album?: Album;
-  participantId: string;
-  participantName: string;
-  lastMessage: string;
-  timestamp: string;
-  isUnread: boolean;
-}
-
 const router = useRouter();
+const route = useRoute();
 const store = useAppStore();
 const offers = ref<ReceivedOffer[]>([]);
-const chatRequests = ref<ChatRequest[]>([]);
 const isLoading = ref(false);
+const listingId = computed(() => typeof route.query.listingId === 'string' ? route.query.listingId : '');
+const listingTitle = computed(() => listingId.value
+  ? store.listings.find(item => item.id === listingId.value)?.title || offers.value[0]?.album.title || ''
+  : '');
+let loadRequest = 0;
 
 const loadOffers = async () => {
-  const response = await fetchApi(`/users/${encodeURIComponent(store.user.id)}/offers/received`);
-  const payload = await response.json().catch(() => ({})) as { offers?: ReceivedOffer[]; detail?: string };
-  if (!response.ok) throw new Error(payload.detail || '가격 제안을 불러오지 못했습니다.');
-  offers.value = payload.offers || [];
-};
-
-const loadChatRequests = async () => {
-  const response = await fetchApi(`/users/${encodeURIComponent(store.user.id)}/chat-requests`);
-  const payload = await response.json().catch(() => ({})) as { requests?: ChatRequest[]; detail?: string };
-  if (!response.ok) throw new Error(payload.detail || '채팅 요청을 불러오지 못했습니다.');
-  chatRequests.value = payload.requests || [];
-};
-
-const loadAll = async () => {
+  const request = ++loadRequest;
+  const requestedListingId = listingId.value;
   isLoading.value = true;
+  offers.value = [];
   try {
-    await Promise.all([loadOffers(), loadChatRequests()]);
+    const query = requestedListingId ? `?listing_id=${encodeURIComponent(requestedListingId)}` : '';
+    const response = await fetchApi(`/users/${encodeURIComponent(store.user.id)}/offers/received${query}`);
+    const payload = await response.json().catch(() => ({})) as { offers?: ReceivedOffer[]; detail?: string };
+    if (!response.ok) throw new Error(payload.detail || '가격 제안을 불러오지 못했습니다.');
+    if (request !== loadRequest) return;
+    offers.value = (payload.offers || []).filter(offer => !requestedListingId || offer.listingId === requestedListingId);
   } catch (error) {
-    alert(error instanceof Error ? error.message : '요청 목록을 불러오지 못했습니다.');
+    if (request === loadRequest) alert(error instanceof Error ? error.message : '가격 제안을 불러오지 못했습니다.');
   } finally {
-    isLoading.value = false;
+    if (request === loadRequest) isLoading.value = false;
   }
-};
-
-const openChat = (request: ChatRequest) => {
-  router.push({
-    path: `/transaction/chat/${request.chatId}`,
-    query: {
-      listingId: request.listingId,
-      recipientId: request.participantId,
-      recipientName: request.participantName,
-    },
-  });
 };
 
 const openOfferChat = (offer: ReceivedOffer) => {
@@ -184,7 +145,5 @@ const updateStatus = async (offerId: string, status: 'accepted' | 'rejected') =>
 const accept = (offerId: string) => void updateStatus(offerId, 'accepted');
 const reject = (offerId: string) => void updateStatus(offerId, 'rejected');
 
-const formatTime = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
-
-onMounted(loadAll);
+watch(listingId, loadOffers, { immediate: true });
 </script>

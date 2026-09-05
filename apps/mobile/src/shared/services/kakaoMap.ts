@@ -172,7 +172,7 @@ function toMapPoint(result: KakaoAddressResult, fallbackTitle: string): KakaoMap
     lat: Number(result.y),
     lng: Number(result.x),
     title: result.place_name || fallbackTitle,
-    addressName: result.road_address_name || result.address_name || fallbackTitle,
+    addressName: result.address_name || result.road_address_name || fallbackTitle,
   };
 }
 

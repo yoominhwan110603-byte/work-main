@@ -116,7 +116,7 @@ onMounted(async () => {
 const finishLogin = () => {
   message.value = '로그인되었습니다.';
   messageType.value = 'info';
-  router.push('/app');
+  router.replace('/app');
 };
 
 const handleLogin = async () => {

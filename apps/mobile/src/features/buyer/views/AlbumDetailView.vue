@@ -6,7 +6,7 @@
 
     <div class="flex-1 overflow-y-auto">
       <div class="relative">
-        <VinylCover :src="album.images[currentImageIndex]" :alt="album.title" class="w-full aspect-square object-cover" />
+        <VinylCover :src="detailImageSrc" :alt="album.title" class="w-full aspect-square object-cover" />
         <div v-if="album.images.length > 1" class="absolute bottom-4 left-0 right-0 flex justify-center gap-2">
           <button
             v-for="(_, index) in album.images"
@@ -83,10 +83,58 @@
             <div><p class="text-sm text-gray-600 mb-1">스크래치 등급</p><p class="text-lg">{{ surfaceGradeText }}</p></div>
             <div><p class="text-sm text-gray-600 mb-1">스크래치 점수</p><p class="text-lg">{{ surfaceScoreText }}</p></div>
           </div>
+          <div v-if="hasScratchInspection" class="mt-4 border-t border-blue-100 pt-4">
+            <div class="mb-2 flex items-center justify-between gap-3">
+              <h3 class="text-sm font-medium text-blue-950">스크래치 분석 사진</h3>
+              <span class="shrink-0 text-xs text-blue-700">후보 {{ scratchCandidateCount }}곳</span>
+            </div>
+            <div class="relative overflow-hidden rounded-lg bg-black">
+              <img :src="scratchImageUrl" alt="스크래치 분석 표면 사진" class="block h-auto w-full" />
+              <svg
+                v-if="scratchRegions.length"
+                viewBox="0 0 1 1"
+                preserveAspectRatio="none"
+                class="pointer-events-none absolute inset-0 h-full w-full"
+                aria-hidden="true"
+              >
+                <template v-for="(region, index) in scratchRegions" :key="`${region.x1}-${region.y1}-${index}`">
+                  <line
+                    :x1="region.x1"
+                    :y1="region.y1"
+                    :x2="region.x2"
+                    :y2="region.y2"
+                    stroke="rgba(255,255,255,0.78)"
+                    stroke-width="10"
+                    stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
+                  />
+                  <line
+                    :x1="region.x1"
+                    :y1="region.y1"
+                    :x2="region.x2"
+                    :y2="region.y2"
+                    :stroke="scratchColor(region.severity)"
+                    stroke-width="4"
+                    stroke-linecap="round"
+                    vector-effect="non-scaling-stroke"
+                  />
+                </template>
+              </svg>
+              <span v-if="!scratchRegions.length" class="absolute bottom-2 left-2 rounded bg-black/70 px-2 py-1 text-xs text-white">
+                표시된 스크래치 후보 없음
+              </span>
+            </div>
+            <div v-if="scratchRegions.length" class="mt-2 flex flex-wrap gap-3 text-xs text-gray-700">
+              <span class="inline-flex items-center gap-1"><span class="h-2 w-4 rounded-full bg-red-500"></span>강함</span>
+              <span class="inline-flex items-center gap-1"><span class="h-2 w-4 rounded-full bg-orange-500"></span>중간</span>
+              <span class="inline-flex items-center gap-1"><span class="h-2 w-4 rounded-full bg-yellow-500"></span>약함</span>
+            </div>
+            <p class="mt-2 text-xs leading-4 text-gray-600">자동 감지된 후보 위치이며, 조명 반사나 먼지가 함께 표시될 수 있습니다.</p>
+          </div>
           </div>
         </section>
 
-        <section v-if="isOwnListing" class="border-t pt-4">
+        <section v-if="isOwnListing" ref="buyOrdersSection" class="border-t pt-4">
           <div class="rounded-lg border border-blue-100 bg-blue-50 p-3">
             <div class="flex items-center justify-between gap-3">
               <h2 class="text-sm font-medium text-blue-950">구매대기</h2>
@@ -95,6 +143,18 @@
               </span>
             </div>
           </div>
+          <p v-if="buyOrdersError" class="mt-3 text-sm text-red-600">{{ buyOrdersError }}</p>
+          <p v-else-if="matchesLoaded && !buyOrderMatches.length" class="py-3 text-sm text-gray-500">등록된 구매 대기가 없습니다.</p>
+          <article v-for="order in buyOrderMatches" :key="order.id" class="flex items-center gap-3 border-b py-3">
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm">{{ order.buyerAlias || '구매자' }}</p>
+              <p class="mt-1 text-base font-medium">{{ order.maxPrice.toLocaleString() }}원</p>
+              <p class="text-xs text-gray-500">{{ new Date(order.createdAt).toLocaleString('ko-KR') }}</p>
+            </div>
+            <button type="button" class="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" :disabled="Boolean(approvingOrderId)" @click="approveBuyOrder(order)">
+              <Check :size="16" />{{ approvingOrderId === order.id ? '승인 중' : '승인' }}
+            </button>
+          </article>
         </section>
 
         <section class="border-t pt-4">
@@ -188,11 +248,8 @@
       <button class="py-3 border border-gray-300 text-gray-800 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push(`/app/sell/${album.id}/edit`)">
         <Pencil :size="18" />수정
       </button>
-      <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
+      <button class="py-3 border border-blue-600 text-blue-600 rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push({ path: '/transaction/offers/received', query: { listingId: album.id } })">
         <ClipboardList :size="18" />제안
-      </button>
-      <button class="col-span-2 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-1 text-sm" @click="router.push('/transaction/offers/received')">
-        <MessageCircle :size="18" />채팅
       </button>
       <button class="col-span-2 py-3 border border-red-300 text-red-600 rounded-lg flex items-center justify-center gap-1 text-sm" :disabled="isHidingListing" @click="hideCurrentListing">
         {{ isHidingListing ? '내리는 중' : '게시글 내리기' }}
@@ -208,13 +265,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, BadgeCheck, ClipboardList, Eye, Heart, MapPin, MessageCircle, Pencil, Play, Volume2 } from 'lucide-vue-next';
-import { getActiveTrade } from '@/features/transaction/services/tradeState';
+import { ArrowLeft, BadgeCheck, Check, ClipboardList, Eye, Heart, MapPin, Pencil, Play, Volume2 } from 'lucide-vue-next';
+import { getActiveTrade, saveActiveTrade } from '@/features/transaction/services/tradeState';
 import { useAppStore } from '@/shared/stores/appStore';
 import { findAlbumById } from '@/features/buyer/services/albumLookup';
 import { goBackOr } from '@/shared/services/navigation';
 import { resolveApiUrl } from '@/shared/services/api';
-import { fetchBuyOrderMatches, recordListingView } from '@/shared/services/market';
+import { fetchBuyOrderMatches, instantSellListing, recordListingView } from '@/shared/services/market';
+import { useForegroundRefresh } from '@/shared/composables/useForegroundRefresh';
 import type { BuyOrder } from '@/shared/models/market';
 import VinylCover from '@/shared/components/VinylCover.vue';
 import {
@@ -225,6 +283,7 @@ import {
   type KakaoMarkerInstance,
 } from '@/shared/services/kakaoMap';
 import { findLocationPointByRest, parseCoordinatePoint, renderStaticMapHtml } from '@/shared/services/staticMap';
+import { resolveUploadedImageUrl } from '@/shared/services/mediaUpload';
 
 const route = useRoute();
 const router = useRouter();
@@ -237,6 +296,10 @@ const isHidingListing = ref(false);
 const buyOrderMatches = ref<BuyOrder[]>([]);
 const matchesLoading = ref(false);
 const matchesLoaded = ref(false);
+const buyOrdersSection = ref<HTMLElement | null>(null);
+const buyOrdersError = ref('');
+const approvingOrderId = ref('');
+let scrolledToBuyOrders = false;
 const wishlistSaving = ref(false);
 const listingMapContainer = ref<HTMLElement | null>(null);
 const listingFallbackMapHtml = ref('');
@@ -266,14 +329,47 @@ type SampleItem = {
   durationSeconds: number;
   recordedAt?: string;
 };
-const isOwnListing = computed(() => Boolean(album.value && (route.query.mine === 'true' || album.value.seller.id === store.user.id)));
+type ScratchRegion = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  severity?: 'low' | 'medium' | 'high';
+};
+type RecordSurfaceAnalysis = {
+  analysisAvailable?: boolean;
+  source?: string;
+  surfaceScore?: number;
+  surfaceGrade?: string;
+  scratchCount?: number;
+  scratchRegions?: ScratchRegion[];
+};
+const isOwnListing = computed(() => Boolean(album.value && store.isLoggedIn && album.value.seller.id === store.user.id));
 const activeTrade = computed(() => album.value ? getActiveTrade(album.value.id) : undefined);
 const isCompletedTrade = computed(() => activeTrade.value?.status === 'completed');
 const showMarketplaceMetrics = computed(() => !isOwnListing.value && !isCompletedTrade.value);
 const buyOrderCount = computed(() => isOwnListing.value && matchesLoaded.value ? buyOrderMatches.value.length : album.value?.buyOrderCount ?? 0);
 const isWishlisted = computed(() => Boolean(album.value && store.isFavoriteAlbum(album.value)));
 const analysisReport = computed(() => album.value?.analysisReport as Record<string, unknown> | undefined);
-const recordSurface = computed(() => analysisReport.value?.recordSurface as { surfaceScore?: number; surfaceGrade?: string; scratchCount?: number } | undefined);
+const recordSurface = computed(() => analysisReport.value?.recordSurface as RecordSurfaceAnalysis | undefined);
+const detailImageSrc = computed(() => resolveUploadedImageUrl(album.value?.images[currentImageIndex.value] || ''));
+const scratchImageUrl = computed(() => {
+  const reportImage = analysisReport.value?.recordImageDataUrl;
+  const source = album.value?.recordImageDataUrl
+    ?? (typeof reportImage === 'string' ? reportImage : album.value?.images[1] || '');
+  return resolveUploadedImageUrl(source);
+});
+const scratchRegions = computed(() => {
+  const regions = recordSurface.value?.scratchRegions;
+  if (!Array.isArray(regions)) return [];
+  return regions.filter(region => [region.x1, region.y1, region.x2, region.y2].every(Number.isFinite));
+});
+const scratchCandidateCount = computed(() => {
+  const count = recordSurface.value?.scratchCount;
+  return typeof count === 'number' && Number.isFinite(count) ? Math.max(0, count) : scratchRegions.value.length;
+});
+const hasScratchInspection = computed(() => Boolean(scratchImageUrl.value && recordSurface.value));
+const scratchColor = (severity?: ScratchRegion['severity']) => severity === 'high' ? '#ef4444' : severity === 'medium' ? '#f97316' : '#eab308';
 const isAudioUnavailable = computed(() => album.value?.audioScore == null || !album.value?.audioGrade || album.value.audioGrade === '분석 불가');
 const audioGradeText = computed(() => isAudioUnavailable.value ? '분석 불가' : album.value?.audioGrade || '분석 불가');
 const audioScoreText = computed(() => isAudioUnavailable.value ? '분석 불가' : `${album.value?.audioScore || 0}점`);
@@ -297,16 +393,47 @@ const hideCurrentListing = async () => {
   if (result.ok) router.push('/app/profile');
 };
 const loadBuyOrderMatches = async () => {
-  if (!album.value || !isOwnListing.value || matchesLoading.value) return;
+  if (!album.value || !isOwnListing.value || matchesLoading.value || approvingOrderId.value) return;
+  const requestedListingId = album.value.id;
+  const requestedToken = store.token;
   matchesLoading.value = true;
   try {
-    const result = await fetchBuyOrderMatches(album.value.id);
+    const result = await fetchBuyOrderMatches(requestedListingId);
+    if (requestedToken !== store.token || requestedListingId !== album.value?.id || approvingOrderId.value) return;
     buyOrderMatches.value = result.matches || [];
-  } catch {
-    buyOrderMatches.value = [];
-  } finally {
+    buyOrdersError.value = '';
     matchesLoaded.value = true;
+    if (route.query.buyOrders === '1' && !scrolledToBuyOrders) {
+      await nextTick();
+      buyOrdersSection.value?.scrollIntoView({ block: 'start' });
+      scrolledToBuyOrders = true;
+    }
+  } catch (error) {
+    buyOrdersError.value = error instanceof Error ? error.message : '구매 대기를 불러오지 못했습니다.';
+  } finally {
     matchesLoading.value = false;
+  }
+};
+useForegroundRefresh(loadBuyOrderMatches, () => isOwnListing.value);
+
+const approveBuyOrder = async (order: BuyOrder) => {
+  if (!album.value || !isOwnListing.value || approvingOrderId.value) return;
+  if (!confirm(`${order.buyerAlias || '구매자'}님의 ${order.maxPrice.toLocaleString()}원 구매 대기를 승인할까요?`)) return;
+  const listingId = album.value.id;
+  approvingOrderId.value = order.id;
+  buyOrdersError.value = '';
+  try {
+    const result = await instantSellListing(listingId, store.user.id, order.id);
+    if (result.listing) store.listings = [result.listing, ...store.listings.filter(item => item.id !== listingId)];
+    saveActiveTrade({ albumId: listingId, buyerName: order.buyerAlias || '구매자', offerPrice: order.maxPrice, acceptedAt: new Date().toISOString(), status: 'selling' });
+    buyOrderMatches.value = [];
+    void store.loadUnreadNotificationCount();
+    const chatId = result.chatId || result.transaction?.chatId;
+    if (chatId) await router.push({ path: `/transaction/chat/${chatId}`, query: { listingId, recipientId: order.buyerId, recipientName: order.buyerAlias || '구매자' } });
+  } catch (error) {
+    buyOrdersError.value = error instanceof Error ? error.message : '구매 대기를 승인하지 못했습니다.';
+  } finally {
+    approvingOrderId.value = '';
   }
 };
 const toggleWishlist = async () => {
@@ -485,7 +612,6 @@ onMounted(async () => {
         if (result.listing) store.listings = [result.listing, ...store.listings.filter(item => item.id !== result.listing.id)];
       })
       .catch(() => undefined);
-    if (isOwnListing.value) void loadBuyOrderMatches();
     void store.loadWishlistFavorites();
     void renderListingMap();
   }

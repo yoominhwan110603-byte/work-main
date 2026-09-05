@@ -589,7 +589,7 @@ export const albums = mockAlbums;
 
 export interface Notification {
   id: string;
-  type: 'offer' | 'chat' | 'listing' | 'favorite' | 'system';
+  type: 'offer' | 'buy_order' | 'chat' | 'listing' | 'favorite' | 'system';
   title: string;
   message: string;
   timestamp: string;

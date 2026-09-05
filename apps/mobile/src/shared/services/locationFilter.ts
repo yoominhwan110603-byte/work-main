@@ -9,27 +9,54 @@ export type ParsedLocation = {
 };
 
 const normalizeLocationText = (value: string) => value
+  .replace(/^대한민국\s*/, '')
   .replace(/[(),]/g, ' ')
   .replace(/\s+/g, ' ')
   .trim();
 
 const compactLocationToken = (value: string) => value.replace(/\s+/g, '').toLocaleLowerCase('ko-KR');
+const metropolitanNames = new Set(['서울', '부산', '대구', '인천', '광주', '대전', '울산', '세종']);
+const provincePattern = /(특별시|광역시|특별자치시|특별자치도|도)$/;
+const districtPattern = /(시|군|구)$/;
+const neighborhoodPattern = /(동|읍|면|리|가)$/;
 const locationPartKey = (value: string) => compactLocationToken(value)
   .replace(/특별자치도|특별자치시|특별시|광역시/g, '')
   .replace(/도$/, '')
-  .replace(/시$/, '');
+  .replace(/[시군구읍면동리가]$/, '');
+
+const isCityToken = (token: string, index: number) => {
+  const compact = compactLocationToken(token);
+  return provincePattern.test(token) || metropolitanNames.has(compact) || (index === 0 && /시$/.test(token));
+};
+
+const sameLocationPart = (left: string, right: string) => {
+  const leftKey = locationPartKey(left);
+  const rightKey = locationPartKey(right);
+  if (!leftKey || !rightKey) return false;
+  return leftKey === rightKey
+    || (leftKey.length > 1 && rightKey.length > 1 && (leftKey.includes(rightKey) || rightKey.includes(leftKey)));
+};
 
 export const parseLocationParts = (value: string): ParsedLocation => {
   const raw = normalizeLocationText(value);
   const tokens = raw.split(' ').map(token => token.trim()).filter(Boolean);
-  const city = tokens.find(token => /(특별시|광역시|특별자치시|특별자치도|도|시)$/.test(token)) || tokens[0] || '';
-  const neighborhood = tokens.find(token => /(동|읍|면|가)$/.test(token) && token !== city) || '';
-  const cityIndex = Math.max(0, tokens.indexOf(city));
-  const district = tokens
-    .slice(cityIndex + 1)
-    .filter(token => token !== neighborhood && /(시|군|구)$/.test(token))
-    .slice(0, 2)
-    .join(' ');
+  const cityIndex = Math.max(0, tokens.findIndex(isCityToken));
+  const city = tokens[cityIndex] || tokens[0] || '';
+  const districtParts: string[] = [];
+  let districtEndIndex = city ? cityIndex + 1 : 0;
+
+  for (let index = districtEndIndex; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!districtPattern.test(token) || neighborhoodPattern.test(token)) continue;
+    districtParts.push(token);
+    districtEndIndex = index + 1;
+    if (/구$|군$/.test(token) || districtParts.length >= 2) break;
+  }
+
+  const neighborhood = tokens
+    .slice(districtEndIndex)
+    .find(token => neighborhoodPattern.test(token) && token !== city && !districtParts.includes(token)) || '';
+  const district = districtParts.join(' ');
 
   return { raw, city, district, neighborhood, tokens };
 };
@@ -41,6 +68,13 @@ export const locationScopeLabel = (scope: LocationFilterScope) => {
   return '문자 포함';
 };
 
+export const locationScopeRegion = (scope: LocationFilterScope, parts: ParsedLocation) => {
+  if (scope === 'city') return parts.city;
+  if (scope === 'district') return [parts.city, parts.district].filter(Boolean).join(' ');
+  if (scope === 'neighborhood') return [parts.city, parts.district, parts.neighborhood].filter(Boolean).join(' ');
+  return parts.raw;
+};
+
 export const matchesLocationScope = (listingLocation: string, filterLocation: string, scope: LocationFilterScope) => {
   const listing = parseLocationParts(listingLocation);
   const filter = parseLocationParts(filterLocation);
@@ -48,7 +82,7 @@ export const matchesLocationScope = (listingLocation: string, filterLocation: st
   if (!listing.raw) return false;
 
   if (scope === 'city') {
-    return Boolean(filter.city && listing.city && locationPartKey(listing.city) === locationPartKey(filter.city));
+    return Boolean(filter.city && listing.city && sameLocationPart(listing.city, filter.city));
   }
 
   if (scope === 'district') {
@@ -57,8 +91,8 @@ export const matchesLocationScope = (listingLocation: string, filterLocation: st
       && filter.district
       && listing.city
       && listing.district
-      && locationPartKey(listing.city) === locationPartKey(filter.city)
-      && locationPartKey(listing.district) === locationPartKey(filter.district),
+      && sameLocationPart(listing.city, filter.city)
+      && sameLocationPart(listing.district, filter.district),
     );
   }
 
@@ -70,9 +104,9 @@ export const matchesLocationScope = (listingLocation: string, filterLocation: st
       && listing.city
       && listing.district
       && listing.neighborhood
-      && locationPartKey(listing.city) === locationPartKey(filter.city)
-      && locationPartKey(listing.district) === locationPartKey(filter.district)
-      && locationPartKey(listing.neighborhood) === locationPartKey(filter.neighborhood),
+      && sameLocationPart(listing.city, filter.city)
+      && sameLocationPart(listing.district, filter.district)
+      && sameLocationPart(listing.neighborhood, filter.neighborhood),
     );
   }
 

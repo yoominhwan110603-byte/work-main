@@ -2,7 +2,7 @@
   <div class="size-full bg-gray-50 dark:bg-neutral-950 overflow-y-auto">
     <header class="bg-white dark:bg-neutral-900 px-4 py-4 border-b dark:border-neutral-800 sticky top-0 z-10">
       <div class="flex items-center gap-2">
-        <button class="p-2" @click="router.back()">
+        <button class="p-2" @click="goBack(router)">
           <ArrowLeft :size="24" />
         </button>
         <h1 class="text-2xl">설정</h1>
@@ -123,6 +123,7 @@ import { defineComponent, h, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowLeft, BadgeCheck, Bell, MapPin, Palette, UserRound } from 'lucide-vue-next';
 import { useAppStore, type AppSettings, type ThemeMode } from '@/shared/stores/appStore';
+import { goBack } from '@/shared/services/navigation';
 import { reverseLocationPointByRest } from '@/shared/services/staticMap';
 
 const SettingSwitch = defineComponent({

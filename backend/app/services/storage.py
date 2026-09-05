@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ except ImportError:  # pragma: no cover - raised with a clear message when Postg
 _WRITE_LOCK = threading.RLock()
 _INITIALIZATION_LOCK = threading.RLock()
 _POSTGRES_READY = False
+_DOCUMENT_CACHE: dict[str, tuple[float, Any]] = {}
+_READ_CACHE_SECONDS = 1.0
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = BACKEND_DIR / "data"
@@ -130,13 +133,19 @@ def initialize_storage() -> None:
 
 def _read_postgres_document(path: str, fallback: Any) -> Any:
     _ensure_postgres_ready()
+    cache_key = Path(path).name
+    cached = _DOCUMENT_CACHE.get(cache_key)
+    if cached and time.monotonic() - cached[0] < _READ_CACHE_SECONDS:
+        return cached[1]
     with _connect() as connection, connection.cursor() as cursor:
         cursor.execute(
             f"SELECT payload FROM {DOCUMENTS_TABLE} WHERE document_key = %s",
             (Path(path).name,),
         )
         row = cursor.fetchone()
-    return fallback if row is None else row[0]
+    value = fallback if row is None else row[0]
+    _DOCUMENT_CACHE[cache_key] = (time.monotonic(), value)
+    return value
 
 
 def _write_postgres_document(path: str, payload: Any) -> None:
@@ -153,6 +162,7 @@ def _write_postgres_document(path: str, payload: Any) -> None:
             (Path(path).name, serialized_payload),
         )
         connection.commit()
+    _DOCUMENT_CACHE[Path(path).name] = (time.monotonic(), payload)
 
 
 def read_json(path: str, fallback: Any) -> Any:

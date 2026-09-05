@@ -66,7 +66,7 @@ const complete = async (skip = false) => {
     }
     await store.signupWithPassword(draft.username, draft.email, draft.password, skip ? [] : selectedGenres.value, draft.emailVerificationToken || '');
     sessionStorage.removeItem('vinyl-check-signup-draft');
-    router.push('/app');
+    router.replace('/app');
   } catch (error) {
     message.value = error instanceof Error ? error.message : '회원가입에 실패했습니다.';
   } finally {

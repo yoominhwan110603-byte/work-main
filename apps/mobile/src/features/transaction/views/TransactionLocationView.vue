@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white text-gray-900 flex flex-col">
     <header class="shrink-0 px-4 py-4 flex items-center border-b bg-white z-10">
-      <button class="p-2 rounded-full active:bg-gray-100" @click="router.back()">
+      <button class="p-2 rounded-full active:bg-gray-100" @click="goBack(router)">
         <ArrowLeft :size="24" />
       </button>
       <h1 class="ml-4 text-lg font-semibold">거래 장소</h1>
@@ -32,7 +32,7 @@
         <button class="flex-1 py-3 bg-blue-600 text-white rounded-lg flex items-center justify-center gap-2 disabled:bg-gray-300" :disabled="!directionUrl" @click="openDirections">
           <Navigation :size="20" />길찾기
         </button>
-        <button class="flex-1 py-3 border border-gray-300 rounded-lg" @click="router.back()">확인</button>
+        <button class="flex-1 py-3 border border-gray-300 rounded-lg" @click="goBack(router)">확인</button>
       </div>
     </footer>
   </div>
@@ -43,6 +43,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, MapPin, Navigation } from 'lucide-vue-next';
 import { fallbackAlbum } from '@/features/buyer/services/albumLookup';
+import { goBack } from '@/shared/services/navigation';
 import {
   findKakaoMapPoint,
   getKakaoMapJavaScriptKey,

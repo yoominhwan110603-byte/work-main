@@ -174,6 +174,7 @@ const defaultSettings: AppSettings = {
 };
 
 const STORAGE_BACKUP_SUFFIX = ':backup';
+const MAX_STORAGE_BACKUP_BYTES = 100_000;
 const storageBackupKey = (key: string) => `${key}${STORAGE_BACKUP_SUFFIX}`;
 
 function parseStoredJson<T>(value: string | null, fallback: T): T {
@@ -199,9 +200,24 @@ function readJson<T>(key: string, fallback: T): T {
 }
 
 function writeJsonToStorage(storage: Storage, key: string, value: unknown) {
+  const serialized = JSON.stringify(value);
+  const backupKey = storageBackupKey(key);
   const previous = storage.getItem(key);
-  if (previous) storage.setItem(storageBackupKey(key), previous);
-  storage.setItem(key, JSON.stringify(value));
+  storage.removeItem(backupKey);
+  if (previous && previous.length <= MAX_STORAGE_BACKUP_BYTES) {
+    try {
+      storage.setItem(backupKey, previous);
+    } catch {
+      storage.removeItem(backupKey);
+    }
+  }
+  try {
+    storage.setItem(key, serialized);
+  } catch (error) {
+    storage.removeItem(backupKey);
+    storage.setItem(key, serialized);
+    if (!storage.getItem(key)) throw error;
+  }
 }
 
 function writeJson(key: string, value: unknown) {
@@ -341,8 +357,9 @@ function compactListingPayloadForServer(payload: ListingCreatePayload): ListingC
 function compactDraftForServer(draft: Record<string, unknown>) {
   const compacted = JSON.parse(JSON.stringify(draft)) as Record<string, unknown>;
   const compactMedia = (value: unknown) => typeof value === 'string' ? compactDataUrl(value) : '';
-  for (const key of ['images', 'coverImageDataUrl', 'recordImageDataUrl', 'recordVideoDataUrl', 'audioDataUrl']) {
-    if (key === 'images') {
+  for (const key of ['images', 'extraImages', 'coverImageDataUrl', 'recordImageDataUrl', 'recordVideoDataUrl', 'audioDataUrl']) {
+    if (key === 'extraImages' && !(key in compacted)) continue;
+    if (key === 'images' || key === 'extraImages') {
       compacted[key] = Array.isArray(compacted[key])
         ? (compacted[key] as unknown[]).map(compactMedia).filter(Boolean).slice(0, 5)
         : [];
@@ -387,11 +404,10 @@ function localListingFromPayload(payload: ListingCreatePayload, user: User, exis
   const minPrice = existing?.minPrice || Math.max(0, Math.round(price * 0.9));
   const maxPrice = existing?.maxPrice || Math.round(price * 1.12);
   const images = Array.from(new Set([
-    ...(payload.images || []),
+    ...(payload.images ?? existing?.images ?? []),
     payload.cover_image_data_url,
     payload.discogs_cover_image_url,
     payload.record_image_data_url,
-    ...(existing?.images || []),
   ].filter(Boolean) as string[]));
   const marketKey = existing?.marketKey || [
     payload.discogs_release_id || '',
@@ -425,8 +441,8 @@ function localListingFromPayload(payload: ListingCreatePayload, user: User, exis
     ownedByMe: true,
     audioSamples: payload.audio_samples || existing?.audioSamples || {},
     images,
-    coverImageDataUrl: payload.cover_image_data_url || existing?.coverImageDataUrl || payload.discogs_cover_image_url || '',
-    recordImageDataUrl: payload.record_image_data_url || existing?.recordImageDataUrl || '',
+    coverImageDataUrl: payload.cover_image_data_url ?? existing?.coverImageDataUrl ?? payload.discogs_cover_image_url ?? '',
+    recordImageDataUrl: payload.record_image_data_url ?? existing?.recordImageDataUrl ?? '',
     recordVideoDataUrl: payload.record_video_data_url || existing?.recordVideoDataUrl || '',
     analysisReport: payload.analysis_report || existing?.analysisReport || {},
     description: payload.description || existing?.description || '',
@@ -612,6 +628,7 @@ export const useAppStore = defineStore('app', {
       void fetchApi('/auth/logout', { method: 'POST' }).catch(() => undefined);
       this.user = defaultUser;
       this.token = '';
+      this.unreadNotificationCount = 0;
       this.wishlistItems = [];
       this.wishlistLoaded = false;
       localStorage.removeItem(USER_KEY);
@@ -624,12 +641,13 @@ export const useAppStore = defineStore('app', {
         this.unreadNotificationCount = 0;
         return 0;
       }
+      const requestedToken = this.token;
       try {
         const response = await fetchApi('/notifications/unread-count');
         const data = await response.json().catch(() => ({})) as { unreadCount?: number };
-        this.unreadNotificationCount = response.ok ? Number(data.unreadCount || 0) : 0;
+        if (this.token === requestedToken && response.ok) this.unreadNotificationCount = Number(data.unreadCount || 0);
       } catch {
-        this.unreadNotificationCount = 0;
+        // Keep the last count when the connection is temporarily unavailable.
       }
       return this.unreadNotificationCount;
     },
@@ -946,25 +964,26 @@ export const useAppStore = defineStore('app', {
       }
     },
     async publishListing(payload: ListingCreatePayload) {
+      const normalizedPayload = { ...payload, user_id: payload.user_id || this.user.id };
       try {
-        const serverPayload = compactListingPayloadForServer({ ...payload, user_id: payload.user_id || this.user.id });
+        const serverPayload = compactListingPayloadForServer(normalizedPayload);
         const response = await fetchApi('/listings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(serverPayload),
-        }, 20000);
+        }, 8000);
         if (!response.ok) return { ok: false, ...(await readListingFailure(response)) };
         const data = await response.json() as { listing?: Album };
-        if (data.listing) {
-          this.listings = upsertListing(this.listings, data.listing);
-          persistCachedListings(this.listings);
-        }
-        return { ok: true, listing: data.listing, message: '게시글을 서버에 저장했습니다.' };
-      } catch {
-        const localListing = localListingFromPayload({ ...payload, user_id: payload.user_id || this.user.id }, this.user);
-        this.listings = upsertListing(this.listings, localListing);
+        if (!data.listing?.id) return { ok: false, message: '서버에서 게시물 저장 결과를 받지 못했습니다.' };
+        this.listings = upsertListing(this.listings, data.listing);
         persistCachedListings(this.listings);
-        return { ok: true, persisted: false, listing: localListing, message: '기기에 게시물을 저장했습니다. 서버 연결이 복구되면 다시 동기화해 주세요.' };
+        return { ok: true, persisted: true, listing: data.listing, message: '게시글을 DB에 저장했습니다.' };
+      } catch (error) {
+        return {
+          ok: false,
+          persisted: false,
+          message: error instanceof Error ? `게시가 취소되었습니다. ${error.message}` : '게시가 취소되었습니다. 서버에 연결하지 못해 게시글을 저장하지 못했습니다.',
+        };
       }
     },
     async updateListing(albumId: string, payload: ListingCreatePayload) {
@@ -1016,7 +1035,11 @@ export const useAppStore = defineStore('app', {
       return readJson<ListingDraftEntry[]>(DRAFTS_KEY, []);
     },
     writeDrafts(drafts: ListingDraftEntry[]) {
-      writeJson(DRAFTS_KEY, drafts);
+      const compactDrafts = drafts.slice(0, 10).map(entry => ({
+        ...entry,
+        draft: compactDraftForServer(entry.draft),
+      }));
+      writeJson(DRAFTS_KEY, compactDrafts);
     },
     activeDraftId() {
       return localStorage.getItem(ACTIVE_DRAFT_ID_KEY) || '';
@@ -1029,58 +1052,65 @@ export const useAppStore = defineStore('app', {
       this.setActiveDraftId(draftId);
       const title = String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글');
       const entry = { id: draftId, title, draft, updatedAt: new Date().toISOString() };
+      let currentDraftStored = false;
+      let draftListStored = false;
       try {
         writeJson(DRAFT_KEY, draft);
+        currentDraftStored = Boolean(this.readDraft());
       } catch {
         try {
           writeJson(DRAFT_KEY, compactDraftForServer(draft));
+          currentDraftStored = Boolean(this.readDraft());
         } catch {
           // Keep the server flow alive when device storage is unavailable.
         }
       }
       try {
         this.writeDrafts(mergeDraftEntries([entry], this.readDrafts()));
+        draftListStored = this.readDrafts().some(item => item.id === draftId);
       } catch {
         try {
           const compactEntry = { ...entry, draft: compactDraftForServer(draft) };
           this.writeDrafts(mergeDraftEntries([compactEntry], this.readDrafts()));
+          draftListStored = this.readDrafts().some(item => item.id === draftId);
         } catch {
           // Ignore local draft-list quota failures; server persistence still runs.
         }
       }
+      return { ok: currentDraftStored || draftListStored, draftId, entry };
     },
     async saveDraftToServer(draft: Record<string, unknown>, draftId = '') {
-      this.saveDraft(draft);
+      const localResult = this.saveDraft(draft);
       const activeId = this.activeDraftId() || draftId;
-      try {
-        const serverDraft = compactDraftForServer(draft);
-        const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            draft: serverDraft,
-            draftId: activeId,
-            title: String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글'),
-          }),
-        });
-        if (!response.ok) {
-          const failure = await response.json().catch(() => ({})) as { detail?: string; message?: string };
-          return { ok: false, persisted: false, message: String(failure.detail || failure.message || '서버 임시 저장에 실패했습니다. 기기 저장을 확인해 주세요.') };
-        }
-        const data = await response.json() as { persisted: boolean; draft?: Record<string, unknown>; draftEntry?: ListingDraftEntry; drafts?: ListingDraftEntry[] };
-        if (data.draft) this.saveDraft(data.draft);
-        if (data.draftEntry) this.setActiveDraftId(data.draftEntry.id);
-        if (data.drafts) {
-          try {
-            this.writeDrafts(mergeDraftEntries(data.drafts, this.readDrafts()));
-          } catch {
-            // Keep publishing flow working even when local draft history is too large.
+      void (async () => {
+        try {
+          const serverDraft = compactDraftForServer(draft);
+          const response = await fetchApi(`/users/${encodeURIComponent(this.user.id)}/listing-draft`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              draft: serverDraft,
+              draftId: activeId,
+              title: String((draft.formData as Record<string, unknown> | undefined)?.title || '제목 없는 판매글'),
+            }),
+          });
+          if (!response.ok) return;
+          const data = await response.json() as { draftEntry?: ListingDraftEntry; drafts?: ListingDraftEntry[] };
+          if (data.draftEntry) this.setActiveDraftId(data.draftEntry.id);
+          if (data.drafts) {
+            try {
+              this.writeDrafts(mergeDraftEntries(data.drafts, this.readDrafts()));
+            } catch {
+              // Keep the local draft when the server history exceeds device storage.
+            }
           }
+        } catch {
+          // The local draft is already available; retry on the next save.
         }
-        return { ok: true, persisted: data.persisted, message: '판매글 임시 저장을 완료했습니다.' };
-      } catch {
-        return { ok: false, persisted: false, message: '서버 연결 실패로 로컬에 임시 저장했습니다.' };
-      }
+      })();
+      return localResult.ok
+        ? { ok: true, persisted: false, message: '임시저장했습니다.' }
+        : { ok: false, persisted: false, message: '기기 저장 공간이 부족해 임시저장하지 못했습니다.' };
     },
     async loadDraftFromServer() {
       try {
@@ -1113,6 +1143,7 @@ export const useAppStore = defineStore('app', {
       const draftId = `local-${Date.now()}`;
       this.setActiveDraftId(draftId);
       localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(storageBackupKey(DRAFT_KEY));
       return draftId;
     },
     async deleteDraft(draftId: string) {
@@ -1149,6 +1180,7 @@ export const useAppStore = defineStore('app', {
     clearDraft() {
       const activeId = this.activeDraftId();
       localStorage.removeItem(DRAFT_KEY);
+      localStorage.removeItem(storageBackupKey(DRAFT_KEY));
       if (activeId) {
         this.writeDrafts(this.readDrafts().filter(item => item.id !== activeId));
         localStorage.removeItem(ACTIVE_DRAFT_ID_KEY);

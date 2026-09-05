@@ -79,6 +79,7 @@ NOTIFICATION_READS_PATH = os.path.join(DATA_DIR, "notification_reads.json")
 NOTIFICATION_DISMISSES_PATH = os.path.join(DATA_DIR, "notification_dismisses.json")
 SESSIONS_PATH = os.path.join(DATA_DIR, "sessions.json")
 FIND_ID_TOKENS_PATH = os.path.join(DATA_DIR, "find_id_tokens.json")
+UPLOADED_IMAGES_DIR = os.path.join(DATA_DIR, "uploaded_images")
 RESET_TOKENS_PATH = os.path.join(DATA_DIR, "password_reset_tokens.json")
 EMAIL_VERIFICATION_PATH = os.path.join(DATA_DIR, "email_verification_tokens.json")
 ENV_PATH = os.path.join(BACKEND_DIR, ".env")
@@ -622,16 +623,29 @@ def compact_listing_analysis_report(value: Any) -> dict[str, Any]:
     return compacted
 
 
+def listing_image_slots(item: dict[str, Any]) -> tuple[str, str]:
+    report = item.get("analysis_report") or item.get("analysisReport") or {}
+    sources = (item, report) if isinstance(report, dict) else (item,)
+    cover = next((source[key] for source in sources for key in ("cover_image_data_url", "coverImageDataUrl") if isinstance(source.get(key), str)), None)
+    record = next((source[key] for source in sources for key in ("record_image_data_url", "recordImageDataUrl") if isinstance(source.get(key), str)), None)
+    # Only legacy galleries without named slots use positional image roles.
+    if cover is None and record is None:
+        images = item.get("images") if isinstance(item.get("images"), list) else []
+        cover = images[0] if images else ""
+        record = images[1] if len(images) > 1 else ""
+    return compact_inline_media(cover), compact_inline_media(record)
+
+
 def compact_listing_for_storage(listing: dict[str, Any]) -> dict[str, Any]:
     item = dict(listing)
+    cover_image, record_image = listing_image_slots(item)
     item["images"] = compact_listing_media_list(item.get("images"))
-    for snake_key, camel_key in (
-        ("cover_image_data_url", "coverImageDataUrl"),
-        ("record_image_data_url", "recordImageDataUrl"),
-        ("record_video_data_url", "recordVideoDataUrl"),
-    ):
-        item[snake_key] = compact_inline_media(item.get(snake_key) or item.get(camel_key))
-        item.pop(camel_key, None)
+    item["cover_image_data_url"] = cover_image
+    item["record_image_data_url"] = record_image
+    item.pop("coverImageDataUrl", None)
+    item.pop("recordImageDataUrl", None)
+    item["record_video_data_url"] = compact_inline_media(item.get("record_video_data_url") or item.get("recordVideoDataUrl"))
+    item.pop("recordVideoDataUrl", None)
     item["audio_samples"] = compact_listing_audio_samples(item.get("audio_samples") or item.get("audioSamples"))
     item.pop("audioSamples", None)
     item["analysis_report"] = compact_listing_analysis_report(item.get("analysis_report") or item.get("analysisReport"))
@@ -649,6 +663,41 @@ def compact_listing_in_place(listing: dict[str, Any]) -> dict[str, Any]:
 def compact_listing_storage_list(listings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
     compacted = [compact_listing_for_storage(item) for item in listings]
     return compacted, compacted != listings
+
+
+def normalize_listing_payload(listing: dict[str, Any], listing_id: str, seller_id: str, created_at: str | None = None) -> dict[str, Any]:
+    item = dict(listing)
+    images = compact_listing_media_list(item.get("images"))
+    cover_image, record_image = listing_image_slots(item)
+    for image in (cover_image, record_image, item.get("discogs_cover_image_url") or item.get("discogsCoverImageUrl")):
+        if isinstance(image, str) and image and image not in images:
+            images.append(image)
+
+    item["id"] = listing_id
+    item["seller_id"] = seller_id or "seller1"
+    item["user_id"] = item.get("user_id") or item["seller_id"]
+    item["title"] = str(item.get("title") or "").strip() or "Untitled"
+    item["artist"] = str(item.get("artist") or "").strip()
+    item["catalog_number"] = str(item.get("catalog_number") or item.get("catalogNumber") or "").strip()
+    item["release_label"] = str(item.get("release_label") or item.get("releaseLabel") or "").strip()
+    item["release_country"] = str(item.get("release_country") or item.get("releaseCountry") or "").strip()
+    item["pressing_condition"] = str(item.get("pressing_condition") or item.get("pressingCondition") or "").strip()
+    item["location"] = str(item.get("location") or "").strip() or "서울"
+    item["tags"] = clean_tags(item.get("tags"))
+    item["images"] = images[:5]
+    item["cover_image_data_url"] = cover_image
+    item["record_image_data_url"] = record_image
+    item["record_video_data_url"] = compact_inline_media(item.get("record_video_data_url") or item.get("recordVideoDataUrl"))
+    item["audio_samples"] = compact_listing_audio_samples(item.get("audio_samples") or item.get("audioSamples"))
+    item["analysis_report"] = compact_listing_analysis_report(item.get("analysis_report") or item.get("analysisReport"))
+    item["is_first_press"] = False
+    item["is_rare"] = False
+    item["status"] = str(item.get("status") or "published").lower()
+    item["created_at"] = created_at or item.get("created_at") or item.get("createdAt") or now_iso()
+    item["views"] = int(item.get("views") or item.get("view_count") or item.get("viewCount") or 0)
+    item["view_count"] = int(item.get("view_count") or item.get("viewCount") or item["views"] or 0)
+    item["favorite_count"] = int(item.get("favorite_count") or item.get("favoriteCount") or 0)
+    return compact_listing_for_storage(item)
 
 
 def write_listings(listings: list[dict[str, Any]]) -> None:
@@ -700,10 +749,11 @@ def recalculate_listing_market(listing: dict[str, Any], listings: list[dict[str,
     return apply_market_snapshot(listing, estimate)
 
 
-def wishlist_count_for_listing(listing: dict[str, Any]) -> int:
+def wishlist_count_for_listing(listing: dict[str, Any], wishlist_items: list[dict[str, Any]] | None = None) -> int:
+    items = wishlist_items if wishlist_items is not None else read_list(WISHLIST_PATH)
     return sum(
         1
-        for item in read_list(WISHLIST_PATH)
+        for item in items
         if wishlist_matches_listing(item, listing)
     )
 
@@ -825,7 +875,11 @@ def wishlist_notification_for_listing(listing: dict[str, Any]) -> list[dict[str,
     return created
 
 
-def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
+def listing_to_album(
+    item: dict[str, Any],
+    users: dict[str, Any] | None = None,
+    wishlist_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     price = int(item.get("price") or 0)
     min_price = int(item.get("min_price") or item.get("minPrice") or price * 0.9)
     max_price = int(item.get("max_price") or item.get("maxPrice") or price * 1.12)
@@ -839,10 +893,10 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
     view_count = int(item.get("view_count") or item.get("viewCount") or item.get("views") or 0)
     buy_order_count = int(item.get("buy_order_count") or item.get("buyOrderCount") or 0)
     market_key = item.get("market_key") or item.get("marketKey") or ""
-    wishlist_count = wishlist_count_for_listing({**item, "market_key": market_key}) if market_key or item.get("title") else 0
+    wishlist_count = wishlist_count_for_listing({**item, "market_key": market_key}, wishlist_items) if market_key or item.get("title") else 0
     seller_id = item.get("seller_id") or item.get("user_id") or "seller1"
-    users = read_json(USERS_PATH, {})
-    seller = users.get(str(seller_id), {}) if isinstance(users, dict) else {}
+    resolved_users = users if users is not None else read_json(USERS_PATH, {})
+    seller = resolved_users.get(str(seller_id), {}) if isinstance(resolved_users, dict) else {}
     seller_name = (
         item.get("seller_name")
         or item.get("sellerName")
@@ -853,8 +907,7 @@ def listing_to_album(item: dict[str, Any]) -> dict[str, Any]:
     )
     analysis_report = item.get("analysis_report") if isinstance(item.get("analysis_report"), dict) else {}
     audio_samples = item.get("audio_samples") or item.get("audioSamples") or analysis_report.get("audioSamples") or {}
-    cover_image = item.get("cover_image_data_url") or item.get("coverImageDataUrl") or analysis_report.get("coverImageDataUrl")
-    record_image = item.get("record_image_data_url") or item.get("recordImageDataUrl") or analysis_report.get("recordImageDataUrl")
+    cover_image, record_image = listing_image_slots(item)
     record_video = item.get("record_video_data_url") or item.get("recordVideoDataUrl") or analysis_report.get("recordVideoDataUrl")
     tags = clean_tags(item.get("tags"))
     return {
@@ -945,7 +998,7 @@ def compact_listing_album(album: dict[str, Any]) -> dict[str, Any]:
         if (compact_image := keep_small_inline_media(image))
     ][:1]
     item["coverImageDataUrl"] = keep_small_inline_media(item.get("coverImageDataUrl"))
-    item["recordImageDataUrl"] = ""
+    item["recordImageDataUrl"] = keep_small_inline_media(item.get("recordImageDataUrl"))
     item["recordVideoDataUrl"] = ""
     item["analysisReport"] = {}
 
@@ -977,12 +1030,14 @@ def is_market_visible_listing(item: dict[str, Any]) -> bool:
 
 def all_albums() -> list[dict[str, Any]]:
     merged: dict[str, dict[str, Any]] = {}
+    users = read_json(USERS_PATH, {})
+    wishlist_items = read_list(WISHLIST_PATH)
     for item in MOCK_LISTINGS:
         if is_market_visible_listing(item):
-            merged[str(item.get("id") or stable_id("listing", json.dumps(item, ensure_ascii=False)))] = listing_to_album(item)
+            merged[str(item.get("id") or stable_id("listing", json.dumps(item, ensure_ascii=False)))] = listing_to_album(item, users, wishlist_items)
     for item in read_json(LISTINGS_PATH, []):
         if is_market_visible_listing(item):
-            album = listing_to_album(item)
+            album = listing_to_album(item, users, wishlist_items)
             merged[str(album.get("id"))] = album
     return list(merged.values())
 
@@ -1689,16 +1744,12 @@ async def list_listings(q: str | None = None):
 
 @router.post("/listings")
 async def create_listing(payload: ListingCreate):
-    listing = payload.model_dump()
-    listing["tags"] = clean_tags(listing.get("tags"))
-    listing["is_first_press"] = False
-    listing["is_rare"] = False
-    listing["id"] = f"listing-{uuid4().hex[:10]}"
-    listing["seller_id"] = payload.user_id or "seller1"
-    listing["created_at"] = now_iso()
-    listing["views"] = 0
-    listing["view_count"] = 0
-    listing["favorite_count"] = 0
+    listing = normalize_listing_payload(
+        payload.model_dump(),
+        f"listing-{uuid4().hex[:10]}",
+        payload.user_id or "seller1",
+        now_iso(),
+    )
     listings = read_list(LISTINGS_PATH)
     ok, estimate, message = validate_listing_price(listing, listings, read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH))
     if not ok:
@@ -1722,12 +1773,14 @@ async def update_listing(listing_id: str, payload: ListingCreate, user_id: str |
             seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
             if user_id and seller_id and seller_id != user_id:
                 raise HTTPException(status_code=403, detail="판매글을 수정할 권한이 없습니다.")
-            listing.update(payload.model_dump())
-            listing["tags"] = clean_tags(listing.get("tags"))
-            listing["is_first_press"] = False
-            listing["is_rare"] = False
-            listing["id"] = listing_id
-            listing["seller_id"] = seller_id or payload.user_id or "seller1"
+            merged_listing = {**listing, **payload.model_dump()}
+            listing.clear()
+            listing.update(normalize_listing_payload(
+                merged_listing,
+                listing_id,
+                seller_id or payload.user_id or "seller1",
+                str(merged_listing.get("created_at") or merged_listing.get("createdAt") or now_iso()),
+            ))
             listing["updated_at"] = now_iso()
             ok, estimate, message = validate_listing_price(listing, listings, read_list(BUY_ORDERS_PATH), read_list(MARKET_PRICE_HISTORY_PATH))
             if not ok:
@@ -1838,11 +1891,20 @@ async def get_market_price_estimate(
 
 
 @router.post("/market/buy-orders")
-async def create_buy_order(payload: BuyOrderCreate):
+async def create_buy_order(payload: BuyOrderCreate, user_id: Annotated[str, Depends(require_user_id)]):
+    if payload.buyer_id != user_id:
+        raise HTTPException(status_code=403, detail="본인 계정으로 구매 대기를 등록해 주세요.")
     if payload.max_price <= 0:
         raise HTTPException(status_code=400, detail="구매 대기 가격을 입력해 주세요.")
     listings = read_list(LISTINGS_PATH)
     listing = find_raw_listing(payload.listing_id, listings) if payload.listing_id else None
+    if payload.listing_id and not listing:
+        raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
+    if listing:
+        if str(listing.get("seller_id") or listing.get("user_id") or "") == user_id:
+            raise HTTPException(status_code=400, detail="내 판매글에는 구매 대기를 등록할 수 없습니다.")
+        if not is_market_visible_listing(listing):
+            raise HTTPException(status_code=400, detail="판매 가능한 상태가 아닙니다.")
     market_key = payload.market_key or (normalize_market_key(listing) if listing else "")
     if not market_key:
         raise HTTPException(status_code=400, detail="listing_id 또는 market_key가 필요합니다.")
@@ -1897,12 +1959,14 @@ async def get_buy_order_matches(listing_id: str):
 
 
 @router.post("/market/listings/{listing_id}/instant-sell")
-async def instant_sell_listing(listing_id: str, payload: InstantSellRequest | None = None):
+async def instant_sell_listing(listing_id: str, user_id: Annotated[str, Depends(require_user_id)], payload: InstantSellRequest | None = None):
     listings = read_list(LISTINGS_PATH)
     listing = find_raw_listing(listing_id, listings)
     if not listing or listing not in listings:
         raise HTTPException(status_code=404, detail="판매글을 찾을 수 없습니다.")
     seller_id = str(listing.get("seller_id") or listing.get("user_id") or "")
+    if user_id != seller_id:
+        raise HTTPException(status_code=403, detail="구매 대기를 승인할 권한이 없습니다.")
     if payload and payload.seller_id and seller_id and payload.seller_id != seller_id:
         raise HTTPException(status_code=403, detail="즉시 판매 권한이 없습니다.")
     if str(listing.get("status") or "published") in UNAVAILABLE_LISTING_STATUSES:
@@ -2512,8 +2576,13 @@ async def create_offer(payload: OfferCreate):
 
 
 @router.get("/users/{user_id}/offers/received")
-async def get_received_offers(user_id: str):
-    offers = [normalize_offer(item) for item in read_json(OFFERS_PATH, [])]
+async def get_received_offers(user_id: str, listing_id: str | None = None):
+    offers = [
+        normalize_offer(item)
+        for item in read_list(OFFERS_PATH)
+        if str(item.get("sellerId") or item.get("seller_id") or "") == user_id
+        and (listing_id is None or str(item.get("listingId") or item.get("listing_id") or item.get("collectionId") or item.get("collection_id") or "") == listing_id)
+    ]
     return {"offers": [offer for offer in offers if offer["sellerId"] == user_id and offer["buyerId"] != user_id and offer["album"] is not None]}
 
 
@@ -2677,7 +2746,27 @@ def collect_user_notifications(user_id: str, *, limit: int = 50) -> list[dict[st
                 "message": f"{offer['buyerName']}님이 {offer['album']['title'] if offer['album'] else '판매글'}에 {offer['offerPrice']:,}원을 제안했습니다.",
                 "timestamp": offer["timestamp"],
                 "isRead": False,
-                "link": "/transaction/offers/received",
+                "listingId": offer["listingId"],
+                "link": f"/transaction/offers/received?listingId={quote(offer['listingId'], safe='')}",
+            })
+    buy_orders = read_list(BUY_ORDERS_PATH)
+    users = read_json(USERS_PATH, {})
+    for listing in read_list(LISTINGS_PATH):
+        if str(listing.get("seller_id") or listing.get("user_id") or "") != user_id:
+            continue
+        if str(listing.get("status") or "published") in UNAVAILABLE_LISTING_STATUSES:
+            continue
+        listing_id = str(listing.get("id") or "")
+        for order in find_matching_buy_orders(listing, buy_orders):
+            notifications.append({
+                "id": f"buy-order-{order['id']}-{listing_id}",
+                "type": "buy_order",
+                "title": "새 구매 대기",
+                "message": f"{buy_order_buyer_alias(order, users)}님이 {listing.get('title') or '판매글'}에 {int(order.get('max_price') or order.get('maxPrice') or 0):,}원으로 구매 대기를 등록했습니다.",
+                "timestamp": str(order.get("created_at") or order.get("createdAt") or now_iso()),
+                "isRead": False,
+                "listingId": listing_id,
+                "link": f"/app/album/{quote(listing_id, safe='')}?mine=true&buyOrders=1",
             })
     chats = read_json(CHATS_PATH, {})
     if isinstance(chats, dict):
@@ -2949,12 +3038,19 @@ def environment_score_from_audio(
 
 AUDIO_PROBLEM_FREQUENCY_RANGE_HZ = {"min": 4000, "max": 12000}
 MIN_AUDIO_ANALYSIS_SECONDS = 60
-AUDIO_CLICK_SCORE_MULTIPLIER = 300.0
+MAX_AUDIO_ANALYSIS_SECONDS = 30 * 60
+AUDIO_SPECTRAL_RATE_PENALTY = 2.2
+AUDIO_SPECTRAL_DURATION_PENALTY = 55.0
 
 
-def audio_score_from_clicks(click_count: int, duration_seconds: float) -> int:
-    score = 100.0 - (AUDIO_CLICK_SCORE_MULTIPLIER * (float(click_count) / max(float(duration_seconds), 1.0)))
-    return int(max(0, min(100, round(score))))
+def audio_score_from_high_frequency_issues(issue_rate: float | None, issue_duration_ratio: float | None) -> int:
+    score = (
+        100.0
+        - max(0.0, float(issue_rate or 0.0)) * AUDIO_SPECTRAL_RATE_PENALTY
+        - max(0.0, float(issue_duration_ratio or 0.0)) * AUDIO_SPECTRAL_DURATION_PENALTY
+    )
+    clamped_score = max(0.0, min(100.0, score))
+    return int(clamped_score + 0.5)
 
 
 def summarize_spectral_issue_frames(issue_frames: np.ndarray, frame_seconds: float) -> tuple[int, float]:
@@ -2990,7 +3086,7 @@ def analyze_audio_bytes(content: bytes, filename: str | None, label: str, ambien
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(content)
             temp_path = temp_file.name
-        waveform, sr = librosa.load(temp_path, sr=44100, mono=False)
+        waveform, sr = librosa.load(temp_path, sr=44100, mono=False, duration=MAX_AUDIO_ANALYSIS_SECONDS)
         channel_rms_values: list[float] = []
         if waveform.ndim == 1:
             channel_rms_values.append(float(np.sqrt(np.mean(np.square(waveform)))))
@@ -3080,7 +3176,10 @@ def analyze_audio_bytes(content: bytes, filename: str | None, label: str, ambien
         if channel_imbalance_db >= 5:
             confidence -= 4
 
-        score = 0 if label == "ambient" else audio_score_from_clicks(click_count, duration)
+        score = 0 if label == "ambient" else audio_score_from_high_frequency_issues(
+            spectral_issue_rate,
+            spectral_issue_duration_ratio,
+        )
         clipping_risk = "high" if clipping_ratio >= 0.018 else "medium" if clipping_ratio >= 0.004 else "low"
         return {
             "filename": filename or "audio-sample",
@@ -3250,7 +3349,6 @@ async def analyze_audio_samples(
             "ambientSample": ambient,
             "summary": f"음질 샘플은 최소 {MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.",
         }
-    score = audio_score_from_clicks(click_count, total_duration)
     noise_values = [float(sample["noiseFloorDb"]) for sample in samples if sample.get("noiseFloorDb") is not None]
     adjusted_noise_values = [float(sample["adjustedNoiseFloorDb"]) for sample in samples if sample.get("adjustedNoiseFloorDb") is not None]
     dynamic_values = [float(sample["dynamicRangeDb"]) for sample in samples if sample.get("dynamicRangeDb") is not None]
@@ -3268,6 +3366,7 @@ async def analyze_audio_samples(
     spectral_issue_rate = round(spectral_issue_count / spectral_total_duration * 60, 1) if spectral_total_duration > 0 else None
     spectral_issue_duration_ratio = round(spectral_issue_duration_seconds / spectral_total_duration, 3) if spectral_total_duration > 0 else None
     spectral_penalty = average_sample_metric(samples, "spectralPenalty")
+    score = audio_score_from_high_frequency_issues(spectral_issue_rate, spectral_issue_duration_ratio)
     warnings: list[str] = []
     confidence_values = [int(sample.get("analysisConfidence", 70)) for sample in samples]
     analysis_confidence = int(max(20, min(96, round(float(np.mean(confidence_values)) if confidence_values else 50))))
@@ -3308,7 +3407,7 @@ async def analyze_audio_samples(
         "goodSample": good,
         "noisySample": noisy,
         "ambientSample": ambient,
-        "summary": f"음질 {grade_from_score(score)} 등급, {score}점입니다. 감점은 뚝소리 후보 횟수와 녹음 시간만 반영했습니다.",
+        "summary": f"음질 {grade_from_score(score)} 등급, {score}점입니다. {AUDIO_PROBLEM_FREQUENCY_RANGE_HZ['min']}~{AUDIO_PROBLEM_FREQUENCY_RANGE_HZ['max']}Hz 문제 고주파 구간만 반영했습니다.",
     }
 
 
@@ -3750,6 +3849,27 @@ async def track_recommendations(catalog_number: str):
 
 @router.post("/uploads/images")
 async def upload_image(file: Annotated[UploadFile, File()]):
-    content = await file.read()
-    encoded = base64.b64encode(content).decode("ascii")
-    return {"url": f"data:{file.content_type or 'image/jpeg'};base64,{encoded}"}
+    image_types = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+    content_type = str(file.content_type or "").lower().split(";", 1)[0].strip()
+    extension = image_types.get(content_type)
+    if not extension:
+        raise HTTPException(status_code=400, detail="JPG, PNG, WebP 이미지만 업로드할 수 있습니다.")
+
+    max_image_bytes = 12 * 1024 * 1024
+    content = await file.read(max_image_bytes + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail="빈 이미지 파일은 업로드할 수 없습니다.")
+    if len(content) > max_image_bytes:
+        raise HTTPException(status_code=413, detail="이미지는 12MB 이하만 업로드할 수 있습니다.")
+
+    os.makedirs(UPLOADED_IMAGES_DIR, exist_ok=True)
+    stored_name = os.path.basename(f"{uuid4().hex}{extension}")
+    stored_path = os.path.join(UPLOADED_IMAGES_DIR, stored_name)
+    with open(stored_path, "wb") as stored_file:
+        stored_file.write(content)
+    return {"url": f"/uploaded-images/{stored_name}"}

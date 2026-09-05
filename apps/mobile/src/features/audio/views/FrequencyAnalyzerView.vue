@@ -1,7 +1,7 @@
 <template>
   <div class="size-full flex flex-col bg-white text-gray-950 dark:bg-slate-950 dark:text-slate-100">
     <header class="flex items-center border-b px-2 py-2 dark:border-slate-800">
-      <button type="button" class="p-2" aria-label="뒤로" @click="router.back()">
+      <button type="button" class="p-2" aria-label="뒤로" @click="goBack(router)">
         <ArrowLeft :size="24" />
       </button>
       <button type="button" class="ml-auto p-2" aria-label="마이크" @click="toggleAnalyzer">
@@ -46,6 +46,7 @@ import { onMounted, onUnmounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import type { PluginListenerHandle } from '@capacitor/core';
 import { ArrowLeft, Mic, Square } from 'lucide-vue-next';
+import { goBack } from '@/shared/services/navigation';
 import {
   addNativeFrequencyAnalyzerListener,
   canUseNativeFrequencyAnalyzer,

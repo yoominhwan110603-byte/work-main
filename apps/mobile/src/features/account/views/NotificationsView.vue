@@ -32,12 +32,13 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { AlertCircle, Bell, CheckCheck, Heart, LoaderCircle, MessageCircle, Package, Trash2 } from 'lucide-vue-next';
 import type { Notification } from '@/shared/models/market';
 import { deleteNotification, fetchNotifications, markAllNotificationsRead, markNotificationRead } from '@/shared/services/notifications';
 import { useAppStore } from '@/shared/stores/appStore';
+import { useForegroundRefresh } from '@/shared/composables/useForegroundRefresh';
 
 const router = useRouter();
 const store = useAppStore();
@@ -46,33 +47,42 @@ const isLoading = ref(false);
 const errorMessage = ref('');
 const unreadCount = ref(0);
 const removingId = ref('');
+const updating = ref(false);
+const loaded = ref(false);
+let mutationVersion = 0;
 
 const loadNotifications = async () => {
-  isLoading.value = true;
-  errorMessage.value = '';
+  if (isLoading.value || updating.value || removingId.value) return;
+  const version = mutationVersion;
+  const requestedToken = store.token;
+  isLoading.value = !loaded.value;
   try {
-    notifications.value = (await fetchNotifications()).notifications;
+    const result = await fetchNotifications();
+    if (version !== mutationVersion || requestedToken !== store.token) return;
+    notifications.value = result.notifications;
     unreadCount.value = notifications.value.filter(item => !item.isRead).length;
     store.unreadNotificationCount = unreadCount.value;
+    errorMessage.value = '';
+    loaded.value = true;
   } catch (error) {
-    notifications.value = [];
-    errorMessage.value = error instanceof Error ? error.message : '알림을 불러오지 못했습니다.';
+    if (!loaded.value) errorMessage.value = error instanceof Error ? error.message : '알림을 불러오지 못했습니다.';
   } finally {
     isLoading.value = false;
   }
 };
 
-const iconFor = (type: string) => type === 'offer' ? Package : type === 'chat' ? MessageCircle : type === 'favorite' ? Heart : type === 'listing' ? Bell : AlertCircle;
-const colorFor = (type: string) => type === 'offer' ? 'text-blue-600' : type === 'chat' ? 'text-green-600' : type === 'favorite' ? 'text-red-600' : type === 'listing' ? 'text-purple-600' : 'text-gray-600';
+const iconFor = (type: string) => type === 'offer' || type === 'buy_order' ? Package : type === 'chat' ? MessageCircle : type === 'favorite' ? Heart : type === 'listing' ? Bell : AlertCircle;
+const colorFor = (type: string) => type === 'offer' || type === 'buy_order' ? 'text-blue-600' : type === 'chat' ? 'text-green-600' : type === 'favorite' ? 'text-red-600' : type === 'listing' ? 'text-purple-600' : 'text-gray-600';
 const syncUnreadCount = () => {
   unreadCount.value = notifications.value.filter(item => !item.isRead).length;
   store.unreadNotificationCount = unreadCount.value;
 };
 const remove = async (notification: Notification, navigate = false) => {
-  if (removingId.value) return;
+  if (removingId.value || updating.value) return;
   const index = notifications.value.findIndex(item => item.id === notification.id);
   if (index < 0) return;
   removingId.value = notification.id;
+  mutationVersion += 1;
   errorMessage.value = '';
   notifications.value.splice(index, 1);
   syncUnreadCount();
@@ -90,7 +100,9 @@ const remove = async (notification: Notification, navigate = false) => {
   }
 };
 const open = async (notification: Notification) => {
-  if (removingId.value) return;
+  if (removingId.value || updating.value) return;
+  updating.value = true;
+  mutationVersion += 1;
   const wasUnread = !notification.isRead;
   errorMessage.value = '';
   if (wasUnread) {
@@ -106,9 +118,14 @@ const open = async (notification: Notification) => {
       syncUnreadCount();
     }
     errorMessage.value = error instanceof Error ? error.message : '알림 읽음 처리에 실패했습니다.';
+  } finally {
+    updating.value = false;
   }
 };
 const readAll = async () => {
+  if (removingId.value || updating.value) return;
+  updating.value = true;
+  mutationVersion += 1;
   const previous = unreadCount.value;
   notifications.value.forEach(notification => { notification.isRead = true; });
   unreadCount.value = 0;
@@ -117,7 +134,10 @@ const readAll = async () => {
     await markAllNotificationsRead();
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '알림 읽음 처리에 실패했습니다.';
+    updating.value = false;
     if (previous > 0) await loadNotifications();
+  } finally {
+    updating.value = false;
   }
 };
 const formatTime = (timestamp: string) => {
@@ -131,5 +151,5 @@ const formatTime = (timestamp: string) => {
   return new Date(timestamp).toLocaleDateString('ko-KR');
 };
 
-onMounted(loadNotifications);
+useForegroundRefresh(loadNotifications, () => store.isLoggedIn);
 </script>

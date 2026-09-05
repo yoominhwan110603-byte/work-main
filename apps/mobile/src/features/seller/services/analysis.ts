@@ -285,7 +285,9 @@ function subtractNoiseFloorDb(sampleDb?: number | null, ambientDb?: number | nul
 
 const AUDIO_PROBLEM_FREQUENCY_RANGE_HZ = { min: 4000, max: 12000 };
 const MIN_AUDIO_ANALYSIS_SECONDS = 60;
-const AUDIO_CLICK_SCORE_MULTIPLIER = 300;
+const MAX_AUDIO_ANALYSIS_SECONDS = 30 * 60;
+const AUDIO_SPECTRAL_RATE_PENALTY = 2.2;
+const AUDIO_SPECTRAL_DURATION_PENALTY = 55;
 
 type AudioAnalysisFiles = {
   sample?: File;
@@ -296,8 +298,10 @@ type AudioAnalysisFiles = {
 
 type AudioSampleLabel = 'sample' | 'ambient' | 'good' | 'noisy';
 
-function audioScoreFromClicks(clickCount: number, durationSeconds: number) {
-  const score = 100 - (AUDIO_CLICK_SCORE_MULTIPLIER * (clickCount / Math.max(durationSeconds, 1)));
+function audioScoreFromHighFrequencyIssues(issueRate: number, issueDurationRatio: number) {
+  const score = 100
+    - Math.max(0, issueRate) * AUDIO_SPECTRAL_RATE_PENALTY
+    - Math.max(0, issueDurationRatio) * AUDIO_SPECTRAL_DURATION_PENALTY;
   return Math.round(clamp(score, 0, 100));
 }
 
@@ -1061,7 +1065,9 @@ async function decodeAudioFile(file: File) {
 
 function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: number, label: AudioSampleLabel): BrowserAudioSample {
   const sampleRate = buffer.sampleRate;
-  const length = buffer.length;
+  const length = label === 'ambient'
+    ? buffer.length
+    : Math.min(buffer.length, Math.floor(sampleRate * MAX_AUDIO_ANALYSIS_SECONDS));
   const channels = buffer.numberOfChannels;
   const mono = new Float32Array(length);
   const channelRms: number[] = [];
@@ -1143,7 +1149,7 @@ function analyzeDecodedAudio(file: File, buffer: AudioBuffer, requestedSeconds: 
   const channelImbalanceDb = channelRms.length >= 2
     ? Math.abs(dbFromAmplitude(channelRms[0]) - dbFromAmplitude(channelRms[1]))
     : 0;
-  const rawScore = label === 'ambient' ? 0 : audioScoreFromClicks(clickCount, durationSeconds);
+  const rawScore = label === 'ambient' ? 0 : audioScoreFromHighFrequencyIssues(spectralIssueRate, spectralIssueDurationRatio);
   return {
     filename: file.name,
     requestedSeconds,
@@ -1236,10 +1242,10 @@ async function analyzeAudioSamplesInBrowser(files: AudioAnalysisFiles): Promise<
       summary: `음질 샘플은 최소 ${MIN_AUDIO_ANALYSIS_SECONDS}초 이상 녹음해야 합니다.`,
     };
   }
-  const audioScore = audioScoreFromClicks(clickCount, durationSeconds);
+  const audioScore = audioScoreFromHighFrequencyIssues(spectralIssueRate, spectralIssueDurationRatio);
   const warnings = [
     '서버 분석 대신 기기 내 Web Audio 분석을 사용했습니다.',
-    spectralIssueRate >= 16 || spectralIssueCount >= 8 ? '클릭/팝 후보를 음질 점수에 반영했습니다.' : '',
+    spectralIssueRate >= 16 || spectralIssueCount >= 8 ? '문제 고주파 구간을 음질 점수에 반영했습니다.' : '',
   ].filter(Boolean);
   const analysisConfidence = Math.round(clamp(58 + Math.min(22, durationSeconds / 3) + (dynamicRangeDb || 0), 45, 96));
   const channelImbalanceDb = audioSample.channelImbalanceDb ?? null;
@@ -1274,7 +1280,7 @@ async function analyzeAudioSamplesInBrowser(files: AudioAnalysisFiles): Promise<
     goodSample: null,
     noisySample: null,
     ambientSample,
-    summary: `Web Audio 분석 기준 ${gradeFromScore(audioScore)} 등급, ${audioScore}점입니다. 감점은 뚝소리 후보 횟수와 녹음 시간만 반영했습니다.`,
+    summary: `Web Audio 분석 기준 ${gradeFromScore(audioScore)} 등급, ${audioScore}점입니다. 감점은 ${AUDIO_PROBLEM_FREQUENCY_RANGE_HZ.min}~${AUDIO_PROBLEM_FREQUENCY_RANGE_HZ.max}Hz 문제 고주파 구간만 반영했습니다.`,
   };
 }
 

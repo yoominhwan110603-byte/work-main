@@ -26,5 +26,8 @@ def create_app() -> FastAPI:
     audio_samples_dir = Path(__file__).resolve().parents[2] / "data" / "audio_samples"
     audio_samples_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/audio-samples", StaticFiles(directory=str(audio_samples_dir)), name="audio_samples")
+    uploaded_images_dir = Path(__file__).resolve().parents[2] / "data" / "uploaded_images"
+    uploaded_images_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/uploaded-images", StaticFiles(directory=str(uploaded_images_dir)), name="uploaded_images")
     app.include_router(api_router)
     return app

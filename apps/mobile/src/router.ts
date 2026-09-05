@@ -18,7 +18,6 @@ const SellView = () => import('@/features/seller/views/SellView.vue');
 const CameraView = () => import('@/features/seller/views/CameraView.vue');
 const AnalysisRequestView = () => import('@/features/seller/views/AnalysisRequestView.vue');
 const AnalysisResultView = () => import('@/features/seller/views/AnalysisResultView.vue');
-const SellReportView = () => import('@/features/seller/views/SellReportView.vue');
 const CollectionLibraryView = () => import('@/features/collection/views/CollectionLibraryView.vue');
 const CollectionCreateView = () => import('@/features/collection/views/CollectionCreateView.vue');
 const CollectionDetailView = () => import('@/features/collection/views/CollectionDetailView.vue');
@@ -73,7 +72,6 @@ export const router = createRouter({
     { path: '/sell/camera', component: CameraView },
     { path: '/sell/analysis', component: AnalysisRequestView },
     { path: '/sell/analysis/result', component: AnalysisResultView },
-    { path: '/sell/report', component: SellReportView },
     { path: '/collection/new', redirect: to => ({ path: '/app/collection/new', query: to.query }) },
     { path: '/collection/:id/edit', redirect: to => ({ path: `/app/collection/${String(to.params.id)}/edit`, query: to.query }) },
     { path: '/collection/:id/offer', redirect: to => ({ path: `/app/collection/${String(to.params.id)}/offer`, query: to.query }) },

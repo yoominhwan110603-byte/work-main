@@ -161,6 +161,7 @@
 import { computed, defineComponent, h, onMounted, reactive, ref, type PropType } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, Disc3, Music, Upload, X } from 'lucide-vue-next';
+import { goBack as navigateBack } from '@/shared/services/navigation';
 import { createPressingInfo, fetchDiscogsCandidates, type AlbumCandidate } from '@/features/seller/services/discogs';
 import type { CollectionAudioSample, CollectionCreatePayload } from '@/shared/models/collection';
 import VinylCover from '@/shared/components/VinylCover.vue';
@@ -213,8 +214,7 @@ const readAudioDuration = (file: File) => new Promise<number>((resolve) => {
 const tagList = () => form.tags.replace(/,/g, ' ').split(/\s+/).map(tag => tag.trim()).filter(Boolean);
 
 const goBack = () => {
-  if (window.history.length > 1) router.back();
-  else router.push('/app/collection');
+  navigateBack(router);
 };
 
 const clearDiscogsSelection = () => {

@@ -126,7 +126,7 @@ export const findLocationPointByRest = async (keyword: string): Promise<KakaoMap
       lat,
       lng,
       title: candidate?.placeName || keyword,
-      addressName: candidate?.roadAddress || candidate?.jibunAddress || candidate?.address || keyword,
+      addressName: candidate?.jibunAddress || candidate?.address || candidate?.roadAddress || keyword,
     };
   })();
 

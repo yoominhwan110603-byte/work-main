@@ -10,11 +10,8 @@
       <div class="relative flex shrink-0 items-center gap-2">
         <button v-if="showDraftMenu" type="button" class="fixed inset-0 z-30 bg-transparent" aria-label="임시저장 메뉴 닫기" @click="showDraftMenu = false"></button>
         <section v-if="showDraftMenu" class="absolute right-0 top-full z-40 mt-2 w-[min(22rem,calc(100vw-1.5rem))] rounded-lg border border-gray-200 bg-white p-3 shadow-xl">
-          <button type="button" class="flex w-full items-center justify-between rounded-lg px-3 py-3 text-left text-sm font-medium active:bg-gray-50" :disabled="draftSaving" @click="saveDraftFromMenu">
-            <span>{{ draftSaving ? '저장 중' : '임시저장하기' }}</span>
-            <span class="text-xs text-gray-400">현재 작성본</span>
-          </button>
-          <div v-if="draftEntries.length" class="mt-2 border-t pt-2">
+          <p class="px-2 pb-2 text-sm font-medium text-gray-900">저장된 임시글</p>
+          <div v-if="draftEntries.length" class="border-t pt-2">
             <div v-for="entry in draftEntries" :key="entry.id" class="flex items-center gap-2 rounded-lg px-2 py-2 active:bg-gray-50">
               <button type="button" class="min-w-0 flex-1 text-left" @click="loadDraftFromMenu(entry)">
                 <p class="truncate text-sm font-medium text-gray-900">{{ entry.title }}</p>
@@ -25,16 +22,22 @@
               </button>
             </div>
           </div>
-          <p v-else class="mt-2 border-t pt-3 text-center text-xs text-gray-500">저장된 임시글 없음</p>
-          <p v-if="draftMessage" :class="['mt-2 text-center text-xs', draftSavedToDb ? 'text-green-600' : 'text-amber-600']">{{ draftMessage }}</p>
+          <p v-else class="border-t pt-3 text-center text-xs text-gray-500">저장된 임시글 없음</p>
         </section>
         <button
           type="button"
-          class="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-2 text-xs text-gray-700 sm:px-3 sm:text-sm"
+          class="rounded-lg border border-gray-300 px-2.5 py-2 text-xs text-gray-700 disabled:text-gray-400 sm:px-3 sm:text-sm"
+          :disabled="draftSaving"
+          @click="saveDraft(true)"
+        >
+          {{ draftSaving ? '저장 중' : '임시저장' }}
+        </button>
+        <button
+          type="button"
+          class="rounded-lg border border-gray-300 p-2 text-gray-600"
+          aria-label="저장된 임시글 보기"
           @click="showDraftMenu = !showDraftMenu"
         >
-          <span class="hidden sm:inline">임시저장</span>
-          <span class="sm:hidden">임시</span>
           <ChevronDown :size="15" :class="showDraftMenu ? 'rotate-180' : ''" />
         </button>
         <button
@@ -49,6 +52,9 @@
         </button>
       </div>
     </header>
+    <p v-if="draftMessage" :class="['fixed left-1/2 top-20 z-50 -translate-x-1/2 rounded-lg px-4 py-2 text-sm text-white shadow-lg', draftSavedToDb ? 'bg-green-600' : 'bg-red-600']">
+      {{ draftMessage }}
+    </p>
 
     <nav class="shrink-0 border-b bg-white px-3 py-3 sm:px-4" aria-label="판매 등록 단계">
       <div class="grid grid-cols-4 gap-2">
@@ -72,8 +78,8 @@
         </div>
 
         <div class="grid grid-cols-3 gap-2">
-          <PhotoSlot title="대표 이미지" help="카메라로 촬영" :image="coverImage" @picked="file => setImage('cover', file)" @clear="clearImage('cover')" @open-camera="openSurfaceCamera('image')" />
-          <PhotoSlot title="표면 이미지" help="상태 확인용" :image="recordImage" @picked="file => setImage('record', file)" @clear="clearImage('record')" @open-camera="openSurfaceCamera('image')" />
+          <PhotoSlot title="대표 이미지" help="카메라로 촬영" :image="coverImage" @picked="file => setImage('cover', file)" @clear="clearImage('cover')" @open-camera="openSurfaceCamera('image', 'cover')" />
+          <PhotoSlot title="표면 이미지" help="상태 확인용" :image="recordImage" @picked="file => setImage('record', file)" @clear="clearImage('record')" @open-camera="openSurfaceCamera('image', 'record')" />
           <VideoSlot title="표면 동영상" help="선택 사항" :video="recordVideo" @picked="setRecordVideo" @clear="clearRecordVideo" @open-camera="openSurfaceCamera('video')" />
         </div>
 
@@ -163,12 +169,12 @@
         <div class="rounded-lg border border-gray-200 bg-gray-50 p-3 text-sm">
           <div class="min-w-0">
             <p class="font-medium text-gray-950">음질 샘플</p>
-            <p class="mt-1 text-xs text-gray-600">최소 60초 이상 녹음하면 뚝소리 횟수 기준으로 점수를 계산합니다.</p>
+            <p class="mt-1 text-xs text-gray-600">1분 이상, 최대 30분까지 녹음하면 뚝소리 횟수와 측정 시간으로 점수를 계산합니다.</p>
           </div>
           <p v-if="recordMediaPreview" class="mt-2 text-xs text-gray-600">{{ audioRecordingGuide }}</p>
         </div>
 
-        <AudioRecorder kind="sample" :name="audioName" :url="audioUrl" :is-recording="recordingKind === 'sample'" :seconds="recordingSeconds" :min-seconds="MIN_AUDIO_RECORDING_SECONDS" description="음질 샘플" @start="startAudioRecording" @stop="stopAudioRecording" @clear="clearAudio" />
+        <AudioRecorder kind="sample" :name="audioName" :url="audioUrl" :is-recording="recordingKind === 'sample'" :seconds="recordingSeconds" :min-seconds="MIN_AUDIO_RECORDING_SECONDS" :max-seconds="MAX_AUDIO_RECORDING_SECONDS" description="음질 샘플" @start="startAudioRecording" @stop="stopAudioRecording" @clear="clearAudio" />
         <p v-if="audioRecordedAt" class="rounded-lg bg-green-50 p-3 text-xs text-green-800">음질 샘플 저장됨.</p>
 
         <div v-if="recordingMessage" class="rounded-lg bg-gray-50 p-3 text-xs text-gray-700 space-y-2">
@@ -217,29 +223,9 @@
             <button type="button" class="w-full px-4 py-3 border rounded-lg whitespace-nowrap text-sm text-blue-600 sm:w-auto" @click="recommendPrice">추천 가격</button>
           </div>
           <p v-if="priceMessage" class="mt-2 p-3 bg-blue-50 text-blue-700 rounded-lg text-sm">{{ priceMessage }}</p>
-          <div class="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm space-y-3">
-            <div class="flex items-center justify-between gap-3">
-              <p class="font-medium text-blue-950">시세 기반 참고 가격</p>
-              <button type="button" class="rounded-lg bg-white px-3 py-2 text-xs text-blue-600 disabled:text-gray-300" :disabled="marketLoading" @click="refreshMarketEstimate(false)">
-                {{ marketLoading ? '확인 중' : '시세 확인' }}
-              </button>
-            </div>
-            <div v-if="marketEstimate" class="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3">
-              <div class="rounded bg-white p-2"><p class="text-gray-500">하한가</p><p>{{ formatWon(marketEstimate.minPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">상한가</p><p>{{ formatWon(marketEstimate.maxPrice) }}</p></div>
-              <div class="rounded bg-white p-2"><p class="text-gray-500">추천 판매가</p><p>{{ formatWon(marketEstimate.recommendedPrice) }}</p></div>
-            </div>
-            <div v-if="marketEstimate" class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p :class="['text-xs', marketPriceTone]">{{ marketPriceStatus }}</p>
-              <button type="button" class="rounded-lg bg-blue-600 px-3 py-2 text-xs text-white" @click="applyMarketRecommendedPrice">
-                추천가 적용
-              </button>
-            </div>
-            <p v-if="marketError" class="rounded-lg bg-red-50 p-2 text-xs text-red-700">{{ marketError }}</p>
-          </div>
         </div>
         <div>
-          <label class="block text-sm mb-2">판매 장소 *</label>
+          <label class="block text-sm mb-2">판매 장소</label>
           <div class="flex flex-col gap-2 sm:flex-row">
             <input v-model="form.location" type="text" required class="flex-1 min-w-0 px-4 py-3 border rounded-lg" placeholder="예: 서울특별시 강남구 강남역" @change="saveDraft(false)" />
             <button
@@ -252,8 +238,7 @@
               <span>{{ isLocatingCurrentPosition ? '확인 중' : '현재 위치' }}</span>
             </button>
           </div>
-          <p class="mt-1 text-xs text-gray-500">판매할 장소를 입력하거나 지도에서 원하는 지점을 눌러 선택하세요.</p>
-          <p v-if="currentSellStep === 'publish' && !form.location.trim()" class="mt-2 text-xs font-medium text-red-600">판매 장소를 정해야 게시할 수 있습니다.</p>
+          <p class="mt-1 text-xs text-gray-500">판매할 장소를 입력하거나 지도에서 원하는 지점을 눌러 선택하세요. 비워도 게시할 수 있습니다.</p>
           <div
             class="relative mt-3 h-56 touch-none overflow-hidden rounded-lg border bg-gray-100"
             @pointerdown="startFallbackMapDrag"
@@ -289,10 +274,6 @@
           </div>
           <textarea v-model="form.description" class="w-full px-4 py-3 border rounded-lg min-h-36" placeholder="상태와 음질을 간단히 적어 주세요." />
         </div>
-        <div>
-          <label class="block text-sm mb-2">태그</label>
-          <input v-model="form.tags" type="text" class="w-full px-4 py-3 border rounded-lg" placeholder="#재즈 #리이슈 #상태확인" />
-        </div>
       </section>
 
       <section v-show="currentSellStep === 'publish'" class="rounded-lg border p-3 space-y-3">
@@ -319,12 +300,12 @@ import {
 } from '@/features/seller/services/analysis';
 import { createPressingInfo, fetchDiscogsCandidates, type AlbumCandidate } from '@/features/seller/services/discogs';
 import { analyzeAudioSamples, type AudioAnalysisResult } from '@/features/seller/services/audio';
-import { fetchMarketPriceEstimate, fetchPriceRecommendation } from '@/features/seller/services/pricing';
-import type { MarketPriceEstimate } from '@/shared/models/market';
+import { fetchPriceRecommendation } from '@/features/seller/services/pricing';
 import { useAppStore, type ListingDraftEntry } from '@/shared/stores/appStore';
 import { openAppPermissionSettings } from '@/shared/services/appSettings';
 import { canUseNativeAudioRecorder, startNativeAudioRecording, stopNativeAudioRecording } from '@/features/seller/services/nativeAudioRecorder';
-import { setPendingSellDraft, takePendingCapture, takePendingSellDraft } from '@/features/seller/services/captureTransfer';
+import { setPendingSellDraft, takePendingCapture, takePendingSellDraft, type CaptureTarget } from '@/features/seller/services/captureTransfer';
+import { readListingImageSlots } from '@/features/seller/services/listingImages';
 import {
   findKakaoMapPoint,
   getKakaoMapJavaScriptKey,
@@ -336,6 +317,7 @@ import {
 import { findLocationPointByRest, renderStaticMapHtml, reverseLocationPointByRest } from '@/shared/services/staticMap';
 import { type LocationFilterScope } from '@/shared/services/locationFilter';
 import { goBackOr } from '@/shared/services/navigation';
+import { persistListingImage } from '@/shared/services/mediaUpload';
 
 const router = useRouter();
 const route = useRoute();
@@ -345,6 +327,7 @@ const isEditing = computed(() => Boolean(editingListingId.value));
 const sourceCollectionId = computed(() => String(route.query.collectionId || ''));
 type SellStep = 'media' | 'details' | 'audio' | 'publish';
 const MIN_AUDIO_RECORDING_SECONDS = 60;
+const MAX_AUDIO_RECORDING_SECONDS = 30 * 60;
 const sellSteps: Array<{ id: SellStep; label: string }> = [
   { id: 'media', label: '사진' },
   { id: 'details', label: '판본' },
@@ -358,13 +341,12 @@ const goNextSellStep = () => {
   const next = sellSteps[Math.min(sellSteps.length - 1, currentSellStepIndex.value + 1)];
   if (next) currentSellStep.value = next.id;
 };
-const pendingSellDraft = isEditing.value ? null : takePendingSellDraft();
+const transferredSellDraft = takePendingSellDraft();
+const pendingSellDraft = String(transferredSellDraft?.editingListingId || '') === editingListingId.value ? transferredSellDraft : null;
 const restoredPendingSellDraft = Boolean(pendingSellDraft);
-const draft = isEditing.value ? null : (pendingSellDraft || store.readDraft());
+const draft = pendingSellDraft || (isEditing.value ? null : store.readDraft());
 const draftForm = draft?.formData && typeof draft.formData === 'object' ? draft.formData as Record<string, unknown> : {};
-const draftImages = Array.isArray(draft?.images) ? draft.images as string[] : [];
-const draftCoverImage = String(draft?.coverImageDataUrl || draftImages[0] || '');
-const draftRecordImage = String(draft?.recordImageDataUrl || draftImages[1] || '');
+const draftImageSlots = readListingImageSlots(draft);
 type TradeLocationScope = Extract<LocationFilterScope, 'city' | 'district' | 'neighborhood'>;
 type KakaoMapsRuntime = Awaited<ReturnType<typeof loadKakaoMaps>>;
 const normalizeTradeLocationScope = (value: unknown): TradeLocationScope => {
@@ -380,14 +362,13 @@ const form = reactive({
   location: String(draftForm.location || ''),
   locationScope: normalizeTradeLocationScope(draftForm.locationScope),
   description: String(draftForm.description || ''),
-  tags: String(draftForm.tags || ''),
   pressing: String(draftForm.pressing || ''),
   analysisConfirmed: String(draftForm.analysisConfirmed || ''),
 });
 
-const coverImage = ref(draftCoverImage);
-const recordImage = ref(draftRecordImage);
-const extraImages = ref<string[]>(draftImages.slice(2, 5));
+const coverImage = ref(draftImageSlots.cover);
+const recordImage = ref(draftImageSlots.record);
+const extraImages = ref<string[]>(draftImageSlots.extras);
 const recordVideo = ref(String(draft?.recordVideoDataUrl || ''));
 const draftAudioName = String(draft?.audioFileName || draft?.goodAudioFileName || draft?.noisyAudioFileName || '');
 const draftAudioDataUrl = String(draft?.audioDataUrl || draft?.goodAudioDataUrl || draft?.noisyAudioDataUrl || '');
@@ -411,11 +392,11 @@ let recordingChunks: BlobPart[] = [];
 let recordingUsesNative = false;
 
 const audioAnalysis = ref<AudioAnalysisResult | null>((draft?.audioAnalysis as AudioAnalysisResult | null) || null);
-const recordRecognition = ref<LpRecognition>(recognizeLpImage(recordImage.value || recordVideo.value));
+const recordRecognition = ref<LpRecognition>(
+  (draft?.recordRecognition as LpRecognition | undefined)
+  || recognizeLpImage(recordImage.value || recordVideo.value),
+);
 const priceMessage = ref('');
-const marketEstimate = ref<MarketPriceEstimate | null>(null);
-const marketLoading = ref(false);
-const marketError = ref('');
 const catalogLookupMessage = ref('');
 const catalogApiStatus = ref('');
 const draftMessage = ref('');
@@ -424,6 +405,7 @@ const publishSaving = ref(false);
 const draftSavedToDb = ref(false);
 const draftEntries = ref<ListingDraftEntry[]>(store.readDrafts());
 const showDraftMenu = ref(false);
+let draftAutoSaveTimer: number | undefined;
 const catalogCandidates = ref<AlbumCandidate[]>([]);
 const selectedCandidateId = ref('');
 const candidateSource = ref<'discogs' | 'discogs-direct' | 'mock' | ''>('');
@@ -452,7 +434,6 @@ const recordMediaPreview = computed(() => recordImage.value || recordVideo.value
 const recordInspectionMediaType = computed<'image' | 'video'>(() => recordImage.value ? 'image' : 'video');
 const selectedCandidate = computed(() => catalogCandidates.value.find(candidate => candidate.id === selectedCandidateId.value));
 const riskLabel = (risk?: 'low' | 'medium' | 'high' | string) => risk === 'high' ? '높음' : risk === 'medium' ? '주의' : risk === 'low' ? '낮음' : '확인 불가';
-const formatWon = (value?: number | null) => typeof value === 'number' && value > 0 ? `${value.toLocaleString()}원` : '-';
 const formatRecordedDate = (timestamp: string) => new Date(timestamp).toLocaleDateString('ko-KR');
 function gradeFromScore(score: number) {
   if (score >= 96) return 'M';
@@ -553,7 +534,7 @@ const audioRecordingGuide = computed(() => {
   }
   return `스크래치 분석은 ${recordScratchGradeText.value}, ${recordSurfaceScoreText.value}입니다. 한 구간으로 전체 재생 상태를 확인합니다.`;
 });
-const hasRequiredListingFields = computed(() => Boolean(form.title.trim() && Number(form.price) > 0 && form.location.trim()));
+const hasRequiredListingFields = computed(() => Boolean(form.title.trim() && Number(form.price) > 0));
 const valid = computed(() => hasRequiredListingFields.value);
 
 const readFileAsDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
@@ -627,13 +608,13 @@ const loadListingForEdit = () => {
   form.location = listing.location || '';
   form.locationScope = normalizeTradeLocationScope(listing.analysisReport?.locationScope);
   form.description = listing.description;
-  form.tags = [listing.genre].filter(Boolean).join(' ');
   form.pressing = listing.pressingCondition || '';
   form.analysisConfirmed = 'true';
-  coverImage.value = listing.coverImageDataUrl || listing.images[0] || '';
-  recordImage.value = listing.recordImageDataUrl || listing.images[1] || '';
+  const imageSlots = readListingImageSlots(listing);
+  coverImage.value = imageSlots.cover;
+  recordImage.value = imageSlots.record;
   recordVideo.value = listing.recordVideoDataUrl || '';
-  extraImages.value = listing.images.slice(2, 5);
+  extraImages.value = imageSlots.extras;
   recordRecognition.value = (listing.analysisReport?.recordSurface as LpRecognition | undefined)
     || recognizeLpImage(recordImage.value || recordVideo.value, recordVideo.value && !recordImage.value ? 'video' : 'image');
   const savedAudioSample = listing.audioSamples?.sample || listing.audioSamples?.good || listing.audioSamples?.noisy;
@@ -686,6 +667,11 @@ const clearRecordingTimer = () => {
   }
 };
 
+const advanceRecordingTimer = () => {
+  recordingSeconds.value += 1;
+  if (recordingSeconds.value >= MAX_AUDIO_RECORDING_SECONDS) stopAudioRecording();
+};
+
 const cleanupRecordingStream = () => {
   recordingStream?.getTracks().forEach(track => track.stop());
   recordingStream = null;
@@ -712,7 +698,7 @@ const startAudioRecording = async () => {
       recordingKind.value = 'sample';
       recordingSeconds.value = 0;
       recordingMessage.value = audioRecordingMessage();
-      recordingTimer = window.setInterval(() => { recordingSeconds.value += 1; }, 1000);
+      recordingTimer = window.setInterval(advanceRecordingTimer, 1000);
       return;
     } catch (error) {
       recordingUsesNative = false;
@@ -749,10 +735,10 @@ const startAudioRecording = async () => {
       clearRecordingTimer();
       cleanupRecordingStream();
       mediaRecorder = null;
-      recordingMessage.value = '녹음이 저장되었습니다.';
+      recordingMessage.value = durationSeconds >= MAX_AUDIO_RECORDING_SECONDS ? '최대 30분 녹음이 저장되었습니다.' : '녹음이 저장되었습니다.';
     };
     mediaRecorder.start();
-    recordingTimer = window.setInterval(() => { recordingSeconds.value += 1; }, 1000);
+    recordingTimer = window.setInterval(advanceRecordingTimer, 1000);
   } catch {
     recordingKind.value = null;
     clearRecordingTimer();
@@ -772,6 +758,7 @@ const openMicrophoneSettings = async () => {
 };
 
 const stopAudioRecording = () => {
+  clearRecordingTimer();
   if (recordingUsesNative) {
     const durationSeconds = recordingSeconds.value;
     void stopNativeAudioRecording()
@@ -779,7 +766,7 @@ const stopAudioRecording = () => {
         if (!recordingKind.value) return;
         const file = dataUrlToFile(result.dataUrl, `${audioSampleFilePrefix()}-${Date.now()}.${result.extension || 'm4a'}`);
         void handleAudio(file, durationSeconds);
-        recordingMessage.value = '녹음이 저장되었습니다.';
+        recordingMessage.value = durationSeconds >= MAX_AUDIO_RECORDING_SECONDS ? '최대 30분 녹음이 저장되었습니다.' : '녹음이 저장되었습니다.';
       })
       .catch(error => {
         recordingMessage.value = error instanceof Error ? error.message : '녹음을 저장하지 못했습니다.';
@@ -1267,6 +1254,7 @@ const currentImages = () => [coverImage.value, recordImage.value, ...extraImages
 
 const currentDraft = () => ({
   images: currentImages(),
+  extraImages: [...extraImages.value],
   coverImageDataUrl: coverImage.value,
   recordImageDataUrl: recordImage.value,
   recordVideoDataUrl: recordVideo.value,
@@ -1275,6 +1263,7 @@ const currentDraft = () => ({
   audioRecordedAt: audioRecordedAt.value,
   audioDurationSeconds: audioDurationSeconds.value,
   audioAnalysis: audioAnalysis.value,
+  recordRecognition: recordRecognition.value,
   audioRecommendations: {
     summary: audioRecordingGuide.value,
     recordSeconds: MIN_AUDIO_RECORDING_SECONDS,
@@ -1286,7 +1275,7 @@ const applyDraftPayload = (nextDraft: Record<string, unknown> | null | undefined
   const nextForm = nextDraft?.formData && typeof nextDraft.formData === 'object'
     ? nextDraft.formData as Record<string, unknown>
     : {};
-  const nextImages = Array.isArray(nextDraft?.images) ? nextDraft.images as string[] : [];
+  const imageSlots = readListingImageSlots(nextDraft);
 
   Object.assign(form, {
     title: String(nextForm.title || ''),
@@ -1296,13 +1285,12 @@ const applyDraftPayload = (nextDraft: Record<string, unknown> | null | undefined
     location: String(nextForm.location || ''),
     locationScope: normalizeTradeLocationScope(nextForm.locationScope),
     description: String(nextForm.description || ''),
-    tags: String(nextForm.tags || ''),
     pressing: String(nextForm.pressing || ''),
     analysisConfirmed: String(nextForm.analysisConfirmed || ''),
   });
-  coverImage.value = String(nextDraft?.coverImageDataUrl || nextImages[0] || '');
-  recordImage.value = String(nextDraft?.recordImageDataUrl || nextImages[1] || '');
-  extraImages.value = nextImages.slice(2, 5);
+  coverImage.value = imageSlots.cover;
+  recordImage.value = imageSlots.record;
+  extraImages.value = imageSlots.extras;
   recordVideo.value = String(nextDraft?.recordVideoDataUrl || '');
   audioName.value = String(nextDraft?.audioFileName || nextDraft?.goodAudioFileName || nextDraft?.noisyAudioFileName || '');
   audioDataUrl.value = String(nextDraft?.audioDataUrl || nextDraft?.goodAudioDataUrl || nextDraft?.noisyAudioDataUrl || '');
@@ -1314,8 +1302,6 @@ const applyDraftPayload = (nextDraft: Record<string, unknown> | null | undefined
   recordRecognition.value = (nextDraft?.recordRecognition as LpRecognition | undefined)
     || recognizeLpImage(recordImage.value || recordVideo.value, recordVideo.value && !recordImage.value ? 'video' : 'image');
   priceMessage.value = '';
-  marketEstimate.value = null;
-  marketError.value = '';
   catalogCandidates.value = [];
   selectedCandidateId.value = '';
   candidateSource.value = '';
@@ -1325,9 +1311,9 @@ const applyDraftPayload = (nextDraft: Record<string, unknown> | null | undefined
   void renderLocationMap();
 };
 
-const openSurfaceCamera = (mode: 'image' | 'video') => {
-  setPendingSellDraft(currentDraft());
-  router.push(mode === 'video' ? '/sell/camera?mode=video' : '/sell/camera');
+const openSurfaceCamera = (mode: 'image' | 'video', target: CaptureTarget = 'record') => {
+  setPendingSellDraft({ ...currentDraft(), editingListingId: editingListingId.value });
+  router.push({ path: '/sell/camera', query: { mode, target, returnTo: route.path } });
 };
 
 const saveDraft = async (showAlert = true) => {
@@ -1336,9 +1322,11 @@ const saveDraft = async (showAlert = true) => {
   try {
     const result = await store.saveDraftToServer(currentDraft());
     draftEntries.value = store.readDrafts();
-    draftSavedToDb.value = result.persisted;
-    draftMessage.value = result.message;
-    if (showAlert) setTimeout(() => { draftMessage.value = ''; }, 2400);
+    draftSavedToDb.value = result.ok;
+    if (showAlert) {
+      draftMessage.value = result.message;
+      setTimeout(() => { draftMessage.value = ''; }, 2400);
+    }
   } catch (error) {
     draftSavedToDb.value = false;
     draftMessage.value = error instanceof Error ? error.message : '임시 저장에 실패했습니다.';
@@ -1348,10 +1336,13 @@ const saveDraft = async (showAlert = true) => {
   }
 };
 
-const saveDraftFromMenu = async () => {
-  await saveDraft(true);
-  draftEntries.value = store.readDrafts();
-};
+watch(form, () => {
+  if (isEditing.value) return;
+  if (draftAutoSaveTimer) window.clearTimeout(draftAutoSaveTimer);
+  draftAutoSaveTimer = window.setTimeout(() => {
+    void saveDraft(false);
+  }, 1000);
+}, { deep: true });
 
 const loadDraftEntry = (entry: ListingDraftEntry) => {
   store.activateDraft(entry);
@@ -1389,7 +1380,6 @@ const recommendPrice = async () => {
       audioScore: usableAudioScore.value,
     });
     form.price = String(result.recommended_price);
-    void refreshMarketEstimate(false);
     const range = result.price_range ? `추천 범위 ${result.price_range.min.toLocaleString()}~${result.price_range.max.toLocaleString()}원. ` : '';
     const discogs = result.discogs?.suggestedPrice || result.discogs?.marketplaceLow
       ? `Discogs 기준 ${result.discogs.suggestedPrice ? `판매 이력 ${result.discogs.suggestedPrice.toLocaleString()}원` : '판매 이력 확인 불가'}${result.discogs.marketplaceLow ? `, 현재 최저 ${result.discogs.marketplaceLow.toLocaleString()}원` : ''}. `
@@ -1405,25 +1395,30 @@ const recommendPrice = async () => {
     const quality = usableAudioScore.value ? Math.max(0.7, Math.min(1.08, usableAudioScore.value / 82)) : 1;
     const price = Math.round((matched ? ((matched.priceRange.min + matched.priceRange.max) / 2) : averagePrice) * quality / 1000) * 1000;
     form.price = String(price);
-    void refreshMarketEstimate(false);
     priceMessage.value = `Discogs 가격 추천 연결 실패로 앱 내 시세와 품질 점수 기준 ${price.toLocaleString()}원을 임시 추천합니다.`;
   }
 };
 
 const fillDescription = () => {
-  const audioPrefix = isAudioAnalysisUnavailable.value ? '음질 분석 불가' : isReferenceAudioAnalysis.value ? '음질 참고' : '음질';
-  const sampleDates = [audioRecordedAt.value]
-    .filter(Boolean)
-    .map(formatRecordedDate);
+  const title = form.title.trim() || '제목 미입력';
+  const artist = form.artist.trim() || '아티스트 미입력';
+  const catalogNumber = form.catalogNumber.trim() || '-';
+  const audioResult = isAudioAnalysisUnavailable.value
+    ? '분석 불가'
+    : `${audioGradeText.value}${audioScoreText.value !== '-' ? `, ${audioScoreText.value}` : ''}`;
+  const scratchResult = recordMediaPreview.value
+    ? `${recordScratchGradeText.value}, ${recordSurfaceScoreText.value}`
+    : '분석 전';
+  const mapPoint = locationMapPoint.value;
+  const mapAddress = mapPoint
+    ? pickedLocationDescriptionLine(mapPoint).replace(/^거래 주소:\s*/, '')
+    : form.location.trim() || '미지정';
   const parts = [
-    form.title ? `${form.title}${form.artist ? ` - ${form.artist}` : ''}` : '',
-    form.catalogNumber ? `카탈로그 번호: ${form.catalogNumber}` : '',
-    form.location ? `거래 주소: ${form.location}` : '',
-    recordMediaPreview.value ? `스크래치 분석: ${recordScratchGradeText.value}, ${recordSurfaceScoreText.value}.` : '',
-    sampleDates.length ? `샘플 녹음일: ${[...new Set(sampleDates)].join(', ')}` : '',
-    audioAnalysis.value ? `${audioPrefix}: ${isAudioAnalysisUnavailable.value ? '분석 불가' : `${audioGradeText.value}, ${audioScoreText.value}`}.` : '',
-    '실제 재생 상태도 함께 확인해 주세요.',
-  ].filter(Boolean);
+    `${title} - ${artist}`,
+    `카탈로그 번호: ${catalogNumber}`,
+    `등급: 음질 ${audioResult}, 스크래치 ${scratchResult}`,
+    `거래 주소: ${mapAddress}`,
+  ];
   form.description = parts.join('\n');
 };
 
@@ -1441,59 +1436,25 @@ const audioSamplePayload = () => {
   };
 };
 
-const marketPriceTone = computed(() => {
-  if (!marketEstimate.value) return 'text-gray-600';
-  if (marketEstimate.value.priceStatus === 'above_range') return 'text-orange-600';
-  if (marketEstimate.value.priceStatus === 'below_range') return 'text-green-600';
-  return 'text-blue-700';
-});
-const marketPriceStatus = computed(() => {
-  if (!marketEstimate.value) return '';
-  if (marketEstimate.value.priceStatus === 'above_range') return '참고 상한보다 높습니다.';
-  if (marketEstimate.value.priceStatus === 'below_range') return '참고 하한보다 낮습니다.';
-  return '참고 범위 안입니다.';
-});
-
-const refreshMarketEstimate = async (applyRecommended = false) => {
-  if (marketLoading.value) return;
-  marketLoading.value = true;
-  marketError.value = '';
-  try {
-    const estimate = await fetchMarketPriceEstimate({
-      listing_id: isEditing.value ? editingListingId.value : undefined,
-      title: form.title.trim(),
-      artist: form.artist.trim(),
-      catalog_number: form.catalogNumber.trim(),
-      price: Number(form.price) || undefined,
-      year: selectedCandidate.value?.year,
-      audio_grade: usableAudioGrade.value,
-      pressing_condition: form.pressing.trim(),
-      is_first_press: false,
-      is_rare: false,
-      location: form.location.trim(),
-    });
-    marketEstimate.value = estimate;
-    if (applyRecommended && estimate.recommendedPrice > 0) form.price = String(estimate.recommendedPrice);
-    priceMessage.value = `추천가 ${formatWon(estimate.recommendedPrice)}. ${marketPriceStatus.value}`;
-  } catch (error) {
-    marketError.value = error instanceof Error ? error.message : '시세를 불러오지 못했습니다.';
-  } finally {
-    marketLoading.value = false;
-  }
-};
-
-const applyMarketRecommendedPrice = () => {
-  if (!marketEstimate.value?.recommendedPrice) return;
-  form.price = String(marketEstimate.value.recommendedPrice);
-  void refreshMarketEstimate(false);
-};
+const cancelPublishMessage = (reason: string) => `게시가 취소되었습니다. ${reason}`;
 
 const publishListingAction = async () => {
   if (!valid.value || publishSaving.value) return;
   publishSaving.value = true;
   try {
     if (!form.description.trim()) fillDescription();
-    const tags = form.tags.replace(/,/g, ' ').split(/\s+/).map(tag => tag.trim()).filter(Boolean);
+    saveDraft(false);
+    const health = await store.checkServerHealth();
+    if (!health.ok) {
+      alert(cancelPublishMessage(health.message || '서버 연결을 확인한 뒤 다시 시도해 주세요.'));
+      return;
+    }
+    const [persistedCoverImage, persistedRecordImage, ...persistedExtraImages] = await Promise.all([
+      persistListingImage(coverImage.value, 'listing-cover.jpg'),
+      persistListingImage(recordImage.value, 'listing-record-surface.jpg'),
+      ...extraImages.value.map((image, index) => persistListingImage(image, `listing-extra-${index + 1}.jpg`)),
+    ]);
+    const persistedImages = [persistedCoverImage, persistedRecordImage, ...persistedExtraImages].filter(Boolean);
     const payload = {
       title: form.title.trim(),
       artist: form.artist.trim(),
@@ -1506,11 +1467,11 @@ const publishListingAction = async () => {
       year: selectedCandidate.value?.year,
       price: Number(form.price),
       description: form.description.trim(),
-      tags,
+      tags: [],
       location: form.location.trim(),
-      images: currentImages(),
-      cover_image_data_url: coverImage.value,
-      record_image_data_url: recordImage.value,
+      images: persistedImages,
+      cover_image_data_url: persistedCoverImage,
+      record_image_data_url: persistedRecordImage,
       record_video_data_url: recordVideo.value,
       audio_grade: usableAudioGrade.value,
       audio_score: usableAudioScore.value,
@@ -1519,8 +1480,8 @@ const publishListingAction = async () => {
       is_first_press: false,
       analysis_report: {
         pressing: form.pressing,
-        coverImageDataUrl: coverImage.value,
-        recordImageDataUrl: recordImage.value,
+        coverImageDataUrl: persistedCoverImage,
+        recordImageDataUrl: persistedRecordImage,
         recordVideoDataUrl: recordVideo.value,
         recordSurface: recordRecognition.value,
         audio: audioAnalysis.value,
@@ -1536,20 +1497,21 @@ const publishListingAction = async () => {
       ? await store.updateListing(editingListingId.value, payload)
       : await store.publishListing(payload);
     if (!result.ok) {
-      if ('priceEstimate' in result && result.priceEstimate) marketEstimate.value = result.priceEstimate as MarketPriceEstimate;
-      alert(result.message);
+      alert(result.message.startsWith('게시가 취소되었습니다.') ? result.message : cancelPublishMessage(result.message));
       return;
     }
     if (!isEditing.value && result.listing?.id && sourceCollectionId.value) {
       store.markCollectionConverted(sourceCollectionId.value, result.listing.id);
     }
     if (!isEditing.value) store.clearDraft();
-    if (result.listing?.id) localStorage.setItem('vinyl-check-last-sell-report-listing-id', result.listing.id);
-    router.push(isEditing.value && result.listing
-      ? `/app/album/${result.listing.id}?mine=true`
-      : { path: '/sell/report', query: result.listing?.id ? { id: result.listing.id } : {} });
+    if (result.listing?.id) {
+      router.push(`/app/album/${result.listing.id}?mine=true`);
+    } else {
+      router.push('/app/profile');
+    }
   } catch (error) {
-    alert(error instanceof Error ? error.message : '판매글 게시 중 오류가 발생했습니다.');
+    const reason = error instanceof Error ? error.message : '판매글 게시 중 오류가 발생했습니다.';
+    alert(reason.startsWith('게시가 취소되었습니다.') ? reason : cancelPublishMessage(reason));
   } finally {
     publishSaving.value = false;
   }
@@ -1557,7 +1519,7 @@ const publishListingAction = async () => {
 
 onMounted(async () => {
   void renderLocationMap();
-  if (isEditing.value) {
+  if (isEditing.value && !restoredPendingSellDraft) {
     const loaded = loadListingForEdit();
     if (!loaded) {
       await store.loadListingsFromServer();
@@ -1568,20 +1530,24 @@ onMounted(async () => {
       }
     }
   }
-  if (form.price || form.title || form.catalogNumber) void refreshMarketEstimate(false);
   let appliedScannedMedia = false;
-  const scannedRecordImage = await takePendingCapture('image') || localStorage.getItem('vinyl-check-scanned-record-image');
-  if (scannedRecordImage) {
-    localStorage.removeItem('vinyl-check-scanned-record-image');
-    recordImage.value = scannedRecordImage;
-    recordRecognition.value = await analyzeLpMedia(scannedRecordImage, 'image');
+  const scannedCoverImage = await takePendingCapture('image', 'cover');
+  if (scannedCoverImage) {
+    coverImage.value = scannedCoverImage;
     appliedScannedMedia = true;
   }
-  const scannedRecordVideo = await takePendingCapture('video') || localStorage.getItem('vinyl-check-scanned-record-video');
+  const scannedRecordImage = await takePendingCapture('image', 'record');
+  if (scannedRecordImage) {
+    recordImage.value = scannedRecordImage;
+    recordRecognition.value = await analyzeLpMedia(scannedRecordImage, 'image');
+    resetConfirmation();
+    appliedScannedMedia = true;
+  }
+  const scannedRecordVideo = await takePendingCapture('video', 'record');
   if (scannedRecordVideo) {
-    localStorage.removeItem('vinyl-check-scanned-record-video');
     recordVideo.value = scannedRecordVideo;
     recordRecognition.value = await analyzeLpMedia(scannedRecordVideo, 'video');
+    resetConfirmation();
     appliedScannedMedia = true;
   }
   if (appliedScannedMedia) await saveDraft(false);
@@ -1602,6 +1568,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (draftAutoSaveTimer) window.clearTimeout(draftAutoSaveTimer);
   if (locationMapTimer) window.clearTimeout(locationMapTimer);
   locationMarker?.setMap(null);
   if (recordingUsesNative) void stopNativeAudioRecording().catch(() => undefined);
@@ -1759,6 +1726,7 @@ const AudioRecorder = defineComponent({
     isRecording: { type: Boolean, default: false },
     seconds: { type: Number, default: 0 },
     minSeconds: { type: Number, default: 0 },
+    maxSeconds: { type: Number, default: 0 },
     description: { type: String, required: true },
   },
   emits: ['start', 'stop', 'clear'],
@@ -1775,7 +1743,7 @@ const AudioRecorder = defineComponent({
           h('p', { class: 'text-sm truncate' }, props.name ? savedLabel() : props.description),
           h('p', { class: 'text-xs text-gray-500' }, props.isRecording
             ? `녹음 중 ${formatSeconds(props.seconds)}${remainingSeconds() ? ` · ${remainingSeconds()}초 남음` : ''}`
-            : `기기 마이크로 ${formatSeconds(props.minSeconds)} 이상 녹음합니다.`),
+            : `기기 마이크로 ${formatSeconds(props.minSeconds)}~${formatSeconds(props.maxSeconds)} 녹음합니다.`),
         ]),
         props.isRecording
           ? h('button', { type: 'button', class: 'px-3 py-2 rounded-lg bg-red-600 text-white text-xs disabled:bg-gray-300', disabled: props.seconds < props.minSeconds, onClick: () => emit('stop') }, '정지')

@@ -268,6 +268,13 @@ def calculate_recommended_price(
 def _order_matches_listing(order: dict[str, Any], listing: dict[str, Any]) -> bool:
     if str(_value(order, "status", default="active")).lower() != "active":
         return False
+    listing_id = str(_value(order, "listing_id", "listingId", default=""))
+    if listing_id and listing_id != str(listing.get("id") or ""):
+        return False
+    buyer_id = str(_value(order, "buyer_id", "buyerId", default=""))
+    seller_id = str(_value(listing, "seller_id", "user_id", default=""))
+    if buyer_id and buyer_id == seller_id:
+        return False
     if str(_value(order, "market_key", "marketKey", default="")) != normalize_market_key(listing):
         return False
     if grade_rank(effective_media_grade(listing)) < grade_rank(_value(order, "min_media_grade", "minMediaGrade", default="G")):

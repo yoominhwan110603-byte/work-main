@@ -1,7 +1,9 @@
 type CaptureKind = 'image' | 'video';
+export type CaptureTarget = 'cover' | 'record';
 
 type PendingCapture = {
   kind: CaptureKind;
+  target: CaptureTarget;
   dataUrl: string;
 };
 
@@ -67,7 +69,7 @@ function normalizePendingCapture(value: unknown): PendingCapture | null {
   if ((candidate.kind !== 'image' && candidate.kind !== 'video') || typeof candidate.dataUrl !== 'string' || !candidate.dataUrl) {
     return null;
   }
-  return { kind: candidate.kind, dataUrl: candidate.dataUrl };
+  return { kind: candidate.kind, target: candidate.target === 'cover' && candidate.kind === 'image' ? 'cover' : 'record', dataUrl: candidate.dataUrl };
 }
 
 function normalizeDraft(value: unknown): Record<string, unknown> | null {
@@ -141,17 +143,25 @@ async function removePersistentValue(key: string) {
   });
 }
 
-export async function setPendingCapture(kind: CaptureKind, dataUrl: string) {
-  pendingCapture = { kind, dataUrl };
+export async function setPendingCapture(kind: CaptureKind, dataUrl: string, target: CaptureTarget = 'record') {
+  if (target === 'cover' && kind !== 'image') throw new Error('Cover captures must be images.');
+  pendingCapture = { kind, target, dataUrl };
+  Object.values(LEGACY_CAPTURE_KEYS).forEach(key => localStore()?.removeItem(key));
   writeSessionValue(CAPTURE_STORAGE_KEY, pendingCapture);
   await writePersistentValue(CAPTURE_STORAGE_KEY, pendingCapture);
 }
 
-export async function takePendingCapture(kind: CaptureKind) {
+export async function takePendingCapture(kind: CaptureKind, target: CaptureTarget = 'record') {
   const storedCapture = pendingCapture
     || normalizePendingCapture(readSessionValue<PendingCapture>(CAPTURE_STORAGE_KEY))
     || normalizePendingCapture(await readPersistentValue<PendingCapture>(CAPTURE_STORAGE_KEY));
-  if (!storedCapture || storedCapture.kind !== kind) return '';
+  if (!storedCapture) {
+    if (target !== 'record') return '';
+    const legacy = localStore()?.getItem(LEGACY_CAPTURE_KEYS[kind]) || '';
+    localStore()?.removeItem(LEGACY_CAPTURE_KEYS[kind]);
+    return legacy;
+  }
+  if (storedCapture.kind !== kind || storedCapture.target !== target) return '';
   const dataUrl = storedCapture.dataUrl;
   pendingCapture = null;
   removeSessionValue(CAPTURE_STORAGE_KEY);

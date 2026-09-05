@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white flex flex-col">
     <header class="px-4 py-4 flex items-center border-b">
-      <button class="p-2" @click="router.back()">
+      <button class="p-2" @click="goBack(router)">
         <ArrowLeft :size="24" />
       </button>
       <h1 class="ml-4 text-lg">진행 중인 거래</h1>
@@ -84,6 +84,7 @@ import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, CheckCircle2, MapPin, MessageCircle } from 'lucide-vue-next';
 import { useAppStore } from '@/shared/stores/appStore';
+import { goBack } from '@/shared/services/navigation';
 import { fallbackAlbum } from '@/features/buyer/services/albumLookup';
 import VinylCover from '@/shared/components/VinylCover.vue';
 

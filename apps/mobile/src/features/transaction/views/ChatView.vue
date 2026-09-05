@@ -1,7 +1,7 @@
 <template>
   <div class="size-full bg-white flex flex-col">
     <header class="px-4 py-4 border-b flex items-center gap-3 shrink-0">
-      <button class="p-2 -ml-2 rounded-full active:bg-gray-100" @click="router.push('/transaction/offers/received')">
+      <button class="p-2 -ml-2 rounded-full active:bg-gray-100" @click="goBack(router)">
         <ArrowLeft :size="24" />
       </button>
       <div class="flex-1 min-w-0">
@@ -108,6 +108,7 @@ import {
 } from '@/features/transaction/services/chatClient';
 import { useAppStore } from '@/shared/stores/appStore';
 import { fallbackAlbum } from '@/features/buyer/services/albumLookup';
+import { goBack } from '@/shared/services/navigation';
 import VinylCover from '@/shared/components/VinylCover.vue';
 
 const route = useRoute();
